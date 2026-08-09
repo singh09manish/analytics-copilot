@@ -1,6 +1,6 @@
 from copilot.agent.pipeline import answer_question
 from copilot.llm.provider import LLMResult
-from copilot.llm.schemas import QueryPlan
+from copilot.llm.schemas import QueryPlan, SqlDraft
 from tests.conftest import FakeProvider, FakeSnowflake
 
 
@@ -171,3 +171,69 @@ def test_glossary_llm_failure_is_llm_not_snowflake():
 
     r = answer_question("What does MTTR mean?", FlakyGlossaryProvider(), FakeSnowflake())
     assert r.error_type == "llm"
+
+
+class _RepairFlakySnowflake(FakeSnowflake):
+    """Fails the first real execute() attempt (triggering one repair), succeeds after."""
+
+    def __init__(self):
+        super().__init__()
+        self.exec_attempts = 0
+
+    def run_query(self, sql, params=()):
+        if "GOLD.DIM_MACHINE" in sql and "VECTOR" not in sql:
+            self.exec_attempts += 1
+            if self.exec_attempts == 1:
+                raise RuntimeError("SQL compilation error: invalid identifier 'MODELL'")
+        return super().run_query(sql, params)
+
+
+def test_repair_cycle_llm_failure_is_llm_not_snowflake():
+    """execute() fails once -> repair -> the repair-cycle generate() call itself fails
+    with an LLM error. The stale exec_error from the first execute() failure must not
+    override generate()'s correct "llm" classification with "snowflake"."""
+    class FailsOnSecondDraftProvider(PlanningFakeProvider):
+        def __init__(self):
+            super().__init__()
+            self._sql_draft_calls = 0
+
+        def structured(self, system, user, schema, max_tokens=1500):
+            if schema is QueryPlan:
+                return super().structured(system, user, schema, max_tokens)
+            self._sql_draft_calls += 1
+            if self._sql_draft_calls > 1:
+                raise RuntimeError("api overloaded")
+            return super().structured(system, user, schema, max_tokens)
+
+    sf = _RepairFlakySnowflake()
+    r = answer_question("Which models?", FailsOnSecondDraftProvider(), sf)
+    assert r.error_type == "llm"
+    assert "warehouse" not in r.answer.lower()
+    assert sf.exec_attempts == 1  # never got a second execute attempt
+
+
+def test_repair_cycle_guard_rejection_is_validation_not_snowflake():
+    """execute() fails once -> repair -> the repair-cycle draft is guard-rejected. The
+    stale exec_error must not override do_validate()'s "validation" classification with
+    "snowflake", and the response must not carry the misleading warehouse-retry message."""
+    class RejectedOnSecondDraftProvider(PlanningFakeProvider):
+        def __init__(self):
+            super().__init__()
+            self._sql_draft_calls = 0
+
+        def structured(self, system, user, schema, max_tokens=1500):
+            if schema is QueryPlan:
+                return super().structured(system, user, schema, max_tokens)
+            self._sql_draft_calls += 1
+            if self._sql_draft_calls > 1:
+                self.structured_calls.append((schema.__name__, user))
+                return LLMResult(value=SqlDraft(sql="DROP TABLE GOLD.DIM_MACHINE",
+                                                tables_used=["GOLD.DIM_MACHINE"]),
+                                 tokens_in=10, tokens_out=5)
+            return super().structured(system, user, schema, max_tokens)
+
+    sf = _RepairFlakySnowflake()
+    r = answer_question("Which models?", RejectedOnSecondDraftProvider(), sf)
+    assert r.error_type == "validation"
+    assert "warehouse" not in r.answer.lower()
+    assert sf.exec_attempts == 1  # guard rejection short-circuits before a second execute

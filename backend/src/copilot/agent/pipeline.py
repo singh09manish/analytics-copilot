@@ -55,7 +55,12 @@ def answer_question(question: str, provider: LLMProvider, sf: SnowflakeClient, *
             answer="I couldn't reach the warehouse to look up context. Please try "
                    "again in a moment.",
             error_type="snowflake", request_id=request_id)
-    if state.get("exec_error"):
+    # exec_error is set by execute()'s first failure and never cleared once a repair
+    # cycle routes past it (generate()/do_validate() go straight to remember on their
+    # own failure, skipping execute). Guard with "not error_type" so a node's explicit
+    # llm/validation classification always wins over that stale exec_error instead of
+    # being overwritten by the generic warehouse-retry message below.
+    if state.get("exec_error") and not state.get("error_type"):
         return ChatResponse(
             answer="The query failed against the warehouse even after a retry. "
                    "Try asking a bit differently.",
