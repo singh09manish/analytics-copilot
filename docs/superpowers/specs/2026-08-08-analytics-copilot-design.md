@@ -1,6 +1,6 @@
 # Analytics Copilot — Design Spec
 
-**Date:** 2026-08-08
+**Date:** 2026-08-08 (Saturday)
 **Purpose:** A production-grade demo project for an AI/LLM engineering portfolio, built to a one-week deadline.
 **Panel:** (details omitted from the public repo)
 **Strategy:** Build-heavy (~70/30 build vs. prep). Demo posture: *mention + ready if asked* — weave the project into answers, live app + GitHub repo ready to screen-share.
@@ -13,7 +13,7 @@ A chat assistant ("Analytics Copilot") that lets business users query a governed
 
 ## Constraints & Assets
 
-- ~4.5 days until the interview; build must stay demoable at every stage (vertical-slice-first).
+- 5 days until the interview (user available full days); build must stay demoable at every stage (vertical-slice-first).
 - User has: Anthropic API key, personal AWS account, Snowflake account/trial.
 - Run cost target ≈ $1–2/day; teardown script included.
 - Repo name: `analytics-copilot`. UI title: "Analytics Copilot".
@@ -85,17 +85,54 @@ In `docs/prep/`, also published as private artifact pages:
 2. **Panel strategy:** per-interviewer angles (hiring manager → business value/delivery/team fit; architects → schema design, governance, guardrails, scale), 45-min flow map, where to weave the project in.
 3. **Demo script:** 5-min click path (analyst: question → SQL → answer → feedback; re-login as admin: masked→unmasked contrast + Admin Console → CloudWatch dashboard), rehearsed; fallback video + screenshots; architecture re-draw drill.
 
-## Timeline (interview Wed Aug 13, 3 PM ET)
+## Timeline (interview Thu Aug 13, 3:00 PM ET)
 
-- **Sat Aug 9:** repo scaffold; Snowflake seed + medallion + dbt + governance; vertical slice (question → SQL → answer) running locally by EOD.
-- **Sun Aug 10:** vector store + RAG retrieval; MCP server; full LangGraph graph incl. repair loop; React chat UI + login/role routing.
-- **Mon Aug 11:** Terraform + AWS deploy (ECS, S3/CloudFront), CloudWatch dashboard, CI/CD green end-to-end, eval harness + feedback loop, Admin Console wiring (REQUEST_LOG/FEEDBACK/EVAL_RESULTS).
-- **Tue Aug 12:** build freeze; question bank + panel strategy + demo script; record fallback video; first full rehearsal. Buffer for spillover.
-- **Wed Aug 13:** light review, architecture re-draw, out-loud drilling, logistics check (Teams link, screen share). 3:00 PM interview.
+### Sat Aug 8 — tonight (~10 PM–midnight)
+- **10:00–10:30** — Verify assets: Snowflake login works (note account locator + region for the Cortex check), AWS CLI configured, Anthropic key makes a test call.
+- **10:30–11:30** — Repo scaffold (backend, frontend, mcp_server, infra, evals, dbt, docs, CI skeleton); seed-data generator written.
+- **11:30–12:00** — Generate CSVs; create Snowflake database/schemas/warehouse; COPY INTO bronze. (Rolls to Sunday 9 AM if energy runs out.)
+
+### Sun Aug 9 (9 AM–7 PM) — warehouse + vertical slice
+- **9:00–10:30** — dbt silver models + tests (unique, not_null, accepted_values).
+- **10:30–12:00** — Gold star schema + views + clustering; governance: roles, masking policy, PII tag; verify masked vs unmasked.
+- **1:00–3:00** — Vertical-slice backend: `/chat` → AnthropicProvider → generate SQL → sqlglot validate → execute → summarize (linear pipeline, LangGraph comes Monday).
+- **3:00–4:30** — Minimal React chat talking to it locally.
+- **4:30–6:00** — Glossary + schema-card content; Cortex embeddings + vector search proven with a test query (fallback decision made here if Cortex unavailable).
+- **6:00–7:00** — Buffer; commit. **EOD state: ask a question, get a real answer, locally.**
+
+### Mon Aug 10 (9 AM–7 PM) — full agent + UI + auth
+- **9:00–11:00** — MCP server (4 tools); executor rewired through MCP client.
+- **11:00–1:00** — LangGraph graph: plan/retrieve/generate/validate/execute/summarize + repair loop + checkpointer memory; Pydantic-validated structured outputs with retry.
+- **2:00–3:30** — Auth: `/auth/login` JWT + roles + bcrypt; role-per-Snowflake-session; React login + role routing.
+- **3:30–5:30** — React polish: SQL panel, results table, feedback UI; REQUEST_LOG middleware.
+- **5:30–7:00** — Unit tests (validator, schema parsing, prompt builders); local end-to-end rehearsal; commit.
+
+### Tue Aug 11 (9 AM–7 PM) — AWS + CI/CD + evals + Admin Console
+- **9:00–11:30** — Terraform: ECR, ECS Fargate + ALB, S3+CloudFront, Secrets Manager, IAM; first deploy.
+- **11:30–12:30** — CloudWatch: EMF middleware, dashboard, error-rate + billing alarms; metrics verified flowing.
+- **1:30–3:00** — GitHub Actions: PR pipeline + main deploy pipeline, both green.
+- **3:00–4:30** — Eval harness: ~30 golden cases + retrieval evals + LLM judge; smoke subset wired into CI; weekly scheduled run publishing accuracy to CloudWatch.
+- **4:30–6:00** — Admin Console: overview tiles, quality trend, traces, feedback browser.
+- **6:00–7:00** — Full end-to-end test against the deployed URL; commit.
+
+### Wed Aug 12 (9 AM–7 PM) — freeze at noon, then prep
+- **9:00–12:00** — Bug-fix buffer; stretch items only if everything is green (charts in chat answers, Claude Desktop → MCP hookup); polish demo questions against real data.
+- **12:00** — **BUILD FREEZE.**
+- **1:00–3:00** — Finalize question bank (~75 Q&A), panel strategy, demo script (drafted in parallel during build days).
+- **3:00–4:00** — Record 3-min fallback video + screenshots.
+- **4:00–6:00** — Full rehearsal #1: demo click path twice, architecture re-draw on paper, out-loud answers to the top-20 questions.
+- **6:00–7:00** — Mark weak answers for tomorrow; stop.
+
+### Thu Aug 13 — interview day
+- **9:30–10:30** — Light review: architecture re-draw from memory, top-10 answers out loud. No cramming after this.
+- **10:30–11:00** — Logistics: Teams link + screen-share test, notifications off, app up (check dashboard), backup video within reach. *Confirm the calendar time — the invite header showed 12:00 PM (likely Pacific display); the body says 3:00 PM US/Eastern.*
+- **2:30 PM** — Join buffer: water, notes card, browser tabs staged (app, GitHub repo, CloudWatch).
+- **3:00–3:45 PM** — Interview.
+- **After** — Send thank-you notes (drafted in advance, personalized per panelist).
 
 ## Risks & mitigations
 
 - **Cortex functions unavailable in trial region** → Python-side embeddings into the same VECTOR columns.
-- **Build overruns** → vertical-slice ordering means the app is always demoable; stretch items (charts, Claude Desktop hookup) cut first; Tuesday is hard freeze.
+- **Build overruns** → vertical-slice ordering means the app is always demoable; stretch items (charts, Claude Desktop hookup) cut first; Wednesday noon is hard freeze.
 - **Demo-day failure** → recorded video + screenshots; local docker-compose run as second fallback.
 - **AWS cost surprise** → single tiny Fargate task, teardown script, billing alarm in Terraform.
