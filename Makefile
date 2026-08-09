@@ -16,7 +16,7 @@ install:
 	$(UV) sync
 
 lint:
-	$(UV) run ruff check src tests ../data ../scripts ../warehouse
+	$(UV) run ruff check src tests ../data ../scripts ../warehouse ../mcp_server
 
 test:
 	$(UV) run pytest
