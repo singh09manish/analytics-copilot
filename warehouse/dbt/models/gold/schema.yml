@@ -1,0 +1,22 @@
+version: 2
+models:
+  - name: dim_treatment_center
+    columns:
+      - name: center_id
+        tests: [unique, not_null]
+  - name: dim_machine
+    columns:
+      - name: machine_id
+        tests: [unique, not_null]
+      - name: center_id
+        tests:
+          - relationships: {to: ref('dim_treatment_center'), field: center_id}
+  - name: fact_machine_utilization
+    columns:
+      - name: machine_id
+        tests:
+          - relationships: {to: ref('dim_machine'), field: machine_id}
+  - name: fact_service_ticket
+    columns:
+      - name: ticket_id
+        tests: [unique, not_null]

@@ -1,0 +1,13 @@
+medtech:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH_ABS', env_var('SNOWFLAKE_PRIVATE_KEY_PATH')) }}"
+      role: COPILOT_ADMIN
+      database: MEDTECH_ANALYTICS
+      warehouse: COPILOT_WH
+      schema: PUBLIC
+      threads: 4

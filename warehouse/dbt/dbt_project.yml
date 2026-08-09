@@ -1,0 +1,12 @@
+name: medtech_warehouse
+version: "1.0"
+profile: medtech
+model-paths: ["models"]
+models:
+  medtech_warehouse:
+    silver:
+      +materialized: table
+      +schema: SILVER
+    gold:
+      +materialized: table
+      +schema: GOLD

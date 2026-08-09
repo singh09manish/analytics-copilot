@@ -1,0 +1,6 @@
+version: 2
+sources:
+  - name: bronze
+    database: MEDTECH_ANALYTICS
+    schema: BRONZE
+    tables: [{name: RAW_CENTERS}, {name: RAW_MACHINES}, {name: RAW_UTILIZATION}, {name: RAW_SERVICE_TICKETS}]

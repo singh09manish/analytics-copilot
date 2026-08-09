@@ -1,0 +1,26 @@
+version: 2
+models:
+  - name: centers
+    columns:
+      - name: center_id
+        tests: [unique, not_null]
+      - name: region
+        tests:
+          - accepted_values: {values: [NA, EMEA, APAC, LATAM]}
+  - name: machines
+    columns:
+      - name: machine_id
+        tests: [unique, not_null]
+      - name: install_date
+        tests: [not_null]
+  - name: machine_utilization_daily
+    columns:
+      - name: log_date
+        tests: [not_null]
+  - name: service_tickets
+    columns:
+      - name: ticket_id
+        tests: [unique, not_null]
+      - name: severity
+        tests:
+          - accepted_values: {values: [Critical, High, Medium, Low]}

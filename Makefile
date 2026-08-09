@@ -3,6 +3,11 @@ include .env
 export
 endif
 
+# dbt runs with --project-dir/--profiles-dir warehouse/dbt from backend/, so the
+# SNOWFLAKE_PRIVATE_KEY_PATH in .env (repo-root-relative) won't resolve there.
+# Export an absolute override that profiles.yml prefers when set.
+export SNOWFLAKE_PRIVATE_KEY_PATH_ABS := $(CURDIR)/$(SNOWFLAKE_PRIVATE_KEY_PATH)
+
 UV := cd backend && uv
 
 .PHONY: install lint test test-live seed api web check-env
