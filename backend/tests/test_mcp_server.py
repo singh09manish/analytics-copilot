@@ -1,17 +1,10 @@
 import importlib.util
-import os
 import sys
 from pathlib import Path
 
 import pytest
 
 SERVER = Path(__file__).parents[2] / "mcp_server" / "server.py"
-
-# Hermetic: the server module can build a real SnowflakeClient inside _sf(), but
-# nothing in this file calls _sf() (impls are called directly with an explicit
-# `sf` fake) -- set the fake-Snowflake hook anyway so the module never risks a
-# live connection if that changes.
-os.environ["COPILOT_FAKE_SNOWFLAKE"] = "1"
 
 spec = importlib.util.spec_from_file_location("mcp_srv", SERVER)
 mcp_srv = importlib.util.module_from_spec(spec)
@@ -26,6 +19,20 @@ class CardFake(FakeSnowflake):
         if "WHERE UPPER(table_name)" in sql:
             return (["CARD"], [("GOLD.DIM_MACHINE - one row per installed machine",)])
         return super().run_query(sql, params)
+
+
+@pytest.fixture
+def fake_snowflake_env(monkeypatch):
+    """Route the module's own _sf() singleton to the in-process fake, hermetically.
+
+    Uses monkeypatch (auto-reverted at teardown) rather than mutating
+    os.environ directly at module scope. NOTE: _sf() caches its client in a
+    module-level global once built, so once any test in this session has
+    exercised it under this fixture, later calls reuse that same fake instance
+    regardless of the env var -- which is fine, since nothing in this file ever
+    wants a real connection.
+    """
+    monkeypatch.setenv("COPILOT_FAKE_SNOWFLAKE", "1")
 
 
 def test_run_query_revalidates_and_executes():
@@ -48,6 +55,48 @@ def test_side_effecting_scalars_denied(evil):
         mcp_srv._run_query_impl(evil, FakeSnowflake())
 
 
+@pytest.mark.parametrize("evil", [
+    "SELECT GET_DDL/*x*/('TABLE','GOLD.DIM_MACHINE')",
+    "SELECT GET_DDL -- x\n('TABLE','GOLD.DIM_MACHINE')",
+    'SELECT "GET_DDL"(\'TABLE\',\'GOLD.DIM_MACHINE\')',
+])
+def test_obfuscated_side_effecting_calls_still_denied(evil):
+    """Regression for the Critical finding: sql_guard.validate() re-serializes SQL,
+    which relocates comments and can leave a denylist regex run on the ORIGINAL
+    text no longer matching the text Snowflake actually receives -- and a
+    double-quoted identifier form evades a raw regex on both original and
+    normalized text either way. _deny_side_effects must walk the parsed tree of
+    the guard's own output, not regex raw text, to catch all three forms."""
+    with pytest.raises(ValueError, match="side-effect"):
+        mcp_srv._run_query_impl(evil, FakeSnowflake())
+
+
+def test_clean_select_passes_deny_check():
+    safe = mcp_srv.validate("SELECT model FROM GOLD.DIM_MACHINE")
+    mcp_srv._deny_side_effects(safe)  # must not raise
+
+
 def test_describe_table_returns_card():
     card = mcp_srv._describe_table_impl("GOLD.DIM_MACHINE", CardFake())
     assert "machine" in card.lower()
+
+
+def test_list_tables_runs_under_fake_hook(fake_snowflake_env):
+    out = mcp_srv.list_tables()
+    assert out == [{"table": "GOLD.DIM_MACHINE", "summary": "stub card for GOLD.DIM_MACHINE"}]
+
+
+def test_describe_table_runs_under_fake_hook(fake_snowflake_env):
+    out = mcp_srv.describe_table("GOLD.DIM_MACHINE")
+    assert out == "stub card for GOLD.DIM_MACHINE"
+
+
+def test_run_query_runs_under_fake_hook(fake_snowflake_env):
+    out = mcp_srv.run_query("SELECT model FROM GOLD.DIM_MACHINE")
+    assert out["columns"] == ["MODEL"]
+    assert out["rows"] == [["TrueBeam"], ["Halcyon"]]
+
+
+def test_search_glossary_runs_under_fake_hook(fake_snowflake_env):
+    out = mcp_srv.search_glossary("what is MTTR?", k=3)
+    assert out == ["MTTR: mean time to repair"]
