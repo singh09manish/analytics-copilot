@@ -1,6 +1,10 @@
+from datetime import UTC, datetime, timedelta
+
 import bcrypt
+import jwt as pyjwt
 import pytest
-from fastapi import HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from copilot import auth
 
@@ -48,3 +52,41 @@ def test_require_role_dependency():
         with pytest.raises(HTTPException) as e:
             auth.require_role(FakeRequest(bad))
         assert e.value.status_code == 401
+
+
+def test_decode_rejects_expired_token():
+    """Verify decode_token raises AuthError for expired tokens."""
+    s = auth.get_settings()
+    expired = pyjwt.encode(
+        {"sub": "analyst@demo", "role": "analyst",
+         "exp": datetime.now(UTC) - timedelta(hours=1)},
+        s.jwt_secret,
+        algorithm="HS256"
+    )
+    with pytest.raises(auth.AuthError):
+        auth.decode_token(expired)
+
+
+def test_require_role_via_fastapi_depends():
+    """Verify require_role works as FastAPI dependency via Depends()."""
+    app = FastAPI()
+
+    @app.get("/protected")
+    def protected(role: str = Depends(auth.require_role)):
+        return {"role": role}
+
+    client = TestClient(app)
+    token = auth.create_token("analyst", "analyst@demo")
+
+    # Valid token should return 200 with correct role
+    response = client.get("/protected", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json() == {"role": "analyst"}
+
+    # Missing header should return 401
+    response = client.get("/protected")
+    assert response.status_code == 401
+
+    # Invalid token should return 401
+    response = client.get("/protected", headers={"Authorization": "Bearer invalid"})
+    assert response.status_code == 401

@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import jwt
+from fastapi import HTTPException, Request
 
 from copilot.config import get_settings
 
@@ -42,10 +43,8 @@ def decode_token(token: str) -> dict:
         raise AuthError(str(e)) from e
 
 
-def require_role(request) -> str:
+def require_role(request: Request) -> str:
     """FastAPI dependency: returns 'analyst' | 'admin' or raises 401."""
-    from fastapi import HTTPException
-
     header = request.headers.get("authorization", "")
     if not header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
