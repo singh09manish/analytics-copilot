@@ -1,16 +1,7 @@
-import csv
-import io
-
 from pydantic import BaseModel
 
-from copilot.agent import prompts
 from copilot.llm.provider import LLMProvider
-from copilot.llm.schemas import SqlDraft
-from copilot.retrieval import retrieve
 from copilot.snowflake_client import SnowflakeClient
-from copilot.sql_guard import SqlGuardError, validate
-
-MAX_SUMMARY_ROWS = 50
 
 
 class ChatResponse(BaseModel):
@@ -23,67 +14,58 @@ class ChatResponse(BaseModel):
     retrieval_ms: int = 0
     tokens_in: int = 0
     tokens_out: int = 0
+    intent: str | None = None
+    request_id: str | None = None
 
 
-def _rows_as_csv(columns: list[str], rows: list[tuple]) -> str:
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(columns)
-    w.writerows(rows[:MAX_SUMMARY_ROWS])
-    return buf.getvalue()
+def answer_question(question: str, provider: LLMProvider, sf: SnowflakeClient, *,
+                    conversation_id: str | None = None, executor=None) -> ChatResponse:
+    import uuid
 
+    from copilot.agent.graph import build_graph
+    from copilot.sql_guard import SqlGuardError
 
-def answer_question(question: str, provider: LLMProvider, sf: SnowflakeClient) -> ChatResponse:
-    tokens_in = tokens_out = 0
+    request_id = uuid.uuid4().hex
+    thread = conversation_id or request_id
+    graph = build_graph(provider, sf, executor=executor)
     try:
-        context = retrieve(question, sf)
-    except Exception:  # noqa: BLE001  # total warehouse outage must degrade, not crash
-        return ChatResponse(
-            answer="I couldn't reach the warehouse to look up context. Please try "
-                   "again in a moment.",
-            error_type="snowflake")
-    try:
-        draft_res = provider.structured(
-            system=prompts.sql_system(context), user=question, schema=SqlDraft)
-        draft: SqlDraft = draft_res.value
-        tokens_in += draft_res.tokens_in
-        tokens_out += draft_res.tokens_out
-    except ValueError:
-        return ChatResponse(
-            answer="I couldn't turn that into a query. Try rephrasing with the metric "
-                   "and time range you care about.",
-            error_type="llm", retrieval_ms=context.retrieval_ms)
-    try:
-        safe_sql = validate(draft.sql)
+        state = graph.invoke(
+            {"question": question, "intent": "", "context": {}, "draft_sql": "",
+             "assumptions": [], "safe_sql": "", "columns": [], "rows": [],
+             "exec_error": "", "repair_count": 0, "answer": "", "error_type": "",
+             "tokens_in": 0, "tokens_out": 0, "retrieval_ms": 0},
+            config={"configurable": {"thread_id": thread}})
     except SqlGuardError as e:
         return ChatResponse(
             answer=f"I generated a query the safety rules rejected ({e.reason}). "
                    "Try rephrasing your question.",
-            sql=draft.sql, error_type="validation", retrieval_ms=context.retrieval_ms,
-            tokens_in=tokens_in, tokens_out=tokens_out)
-    try:
-        columns, rows = sf.run_query(safe_sql)
-    except Exception as e:  # noqa: BLE001  # snowflake errors -> graceful message
+            error_type="validation", request_id=request_id)
+    except ValueError:
         return ChatResponse(
-            answer="The query failed against the warehouse. This usually means I "
-                   "misread the schema - try asking a bit differently.",
-            sql=safe_sql, error_type="snowflake", retrieval_ms=context.retrieval_ms,
-            assumptions=[str(e)[:200]], tokens_in=tokens_in, tokens_out=tokens_out)
-    try:
-        summary = provider.text(
-            system=prompts.summarize_system(),
-            user=f"Question: {question}\n\nSQL:\n{safe_sql}\n\nResults (CSV, first "
-                 f"{MAX_SUMMARY_ROWS} rows):\n{_rows_as_csv(columns, rows)}")
-        answer = summary.value
-        tokens_in += summary.tokens_in
-        tokens_out += summary.tokens_out
-        err = None
-    except Exception:  # noqa: BLE001  # keep the data even if summarization fails
-        answer = ("I ran the query successfully but couldn't generate a summary. "
-                  "The results are shown below.")
-        err = "llm"
+            answer="I couldn't turn that into a query. Try rephrasing with the "
+                   "metric and time range you care about.",
+            error_type="llm", request_id=request_id)
+    except Exception:  # noqa: BLE001 — total outage must degrade, not crash
+        return ChatResponse(
+            answer="I couldn't reach the warehouse to look up context. Please try "
+                   "again in a moment.",
+            error_type="snowflake", request_id=request_id)
+    if state.get("exec_error"):
+        return ChatResponse(
+            answer="The query failed against the warehouse even after a retry. "
+                   "Try asking a bit differently.",
+            sql=state.get("safe_sql") or state.get("draft_sql"),
+            error_type="snowflake", intent=state.get("intent"),
+            retrieval_ms=state.get("retrieval_ms", 0), request_id=request_id,
+            tokens_in=state.get("tokens_in", 0), tokens_out=state.get("tokens_out", 0))
+    is_data = state.get("intent") == "data_query"
     return ChatResponse(
-        answer=answer, sql=safe_sql, columns=columns,
-        rows=[list(r) for r in rows[:200]], assumptions=draft.assumptions,
-        error_type=err, retrieval_ms=context.retrieval_ms,
-        tokens_in=tokens_in, tokens_out=tokens_out)
+        answer=state.get("answer", ""),
+        sql=state.get("safe_sql") or None if is_data else None,
+        columns=state.get("columns", []) if is_data else [],
+        rows=state.get("rows", [])[:200] if is_data else [],
+        assumptions=state.get("assumptions", []) if is_data else [],
+        error_type=state.get("error_type") or None,
+        intent=state.get("intent"), retrieval_ms=state.get("retrieval_ms", 0),
+        tokens_in=state.get("tokens_in", 0), tokens_out=state.get("tokens_out", 0),
+        request_id=request_id)

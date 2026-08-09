@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 
 from copilot.llm.provider import LLMResult
-from copilot.llm.schemas import SqlDraft
+from copilot.llm.schemas import QueryPlan, SqlDraft
 
 
 class FakeProvider:
@@ -13,6 +13,9 @@ class FakeProvider:
 
     def structured(self, system: str, user: str, schema: type[BaseModel],
                    max_tokens: int = 1500) -> LLMResult:
+        if schema is QueryPlan:
+            return LLMResult(value=QueryPlan(intent="data_query", entities=[]),
+                             tokens_in=5, tokens_out=2)
         return LLMResult(value=SqlDraft(sql=self.sql, tables_used=["GOLD.DIM_MACHINE"]),
                          tokens_in=10, tokens_out=5)
 
