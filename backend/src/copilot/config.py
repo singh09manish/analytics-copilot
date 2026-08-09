@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     snowflake_warehouse: str = "COPILOT_WH"
     snowflake_database: str = "MEDTECH_ANALYTICS"
     snowflake_role: str = "COPILOT_APP_RO"
+    jwt_secret: str = "dev-secret-change-me"
+    jwt_ttl_hours: int = 8
+    demo_analyst_password_hash: str = ""
+    demo_admin_password_hash: str = ""
+    use_mcp: bool = True
 
 
 @lru_cache

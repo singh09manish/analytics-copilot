@@ -10,7 +10,7 @@ export SNOWFLAKE_PRIVATE_KEY_PATH_ABS := $(CURDIR)/$(SNOWFLAKE_PRIVATE_KEY_PATH)
 
 UV := cd backend && uv
 
-.PHONY: install lint test test-live seed api web check-env
+.PHONY: install lint test test-live seed api web check-env load-bronze dbt-run dbt-test ai-library mcp-server
 
 install:
 	$(UV) sync
@@ -47,3 +47,6 @@ web:
 
 check-env:
 	$(UV) run python ../scripts/check_env.py
+
+mcp-server:
+	$(UV) run python ../mcp_server/server.py
