@@ -29,7 +29,7 @@ class SnowflakeClient:
     def _connection(self) -> snowflake.connector.SnowflakeConnection:
         if self._conn is None or self._conn.is_closed():
             s = self._settings
-            self._conn = snowflake.connector.connect(
+            conn = snowflake.connector.connect(
                 account=s.snowflake_account,
                 user=s.snowflake_user,
                 private_key=_load_private_key(s.snowflake_private_key_path),
@@ -38,6 +38,22 @@ class SnowflakeClient:
                 role=self._role,
                 client_session_keep_alive=False,
             )
+            # Disable secondary roles to enforce primary role isolation.
+            # By default, Snowflake users have DEFAULT_SECONDARY_ROLES = ('ALL'),
+            # which allows a session to exercise privileges of all roles the user holds.
+            # Pinning to primary role only ensures RBAC is enforced strictly.
+            # Connect into local conn, pin, then assign to cache.
+            # If pin fails, close the connection and leave cache empty (fail-safe).
+            try:
+                cur = conn.cursor()
+                try:
+                    cur.execute("USE SECONDARY ROLES NONE")
+                finally:
+                    cur.close()
+            except Exception:
+                conn.close()
+                raise
+            self._conn = conn
         return self._conn
 
     def run_query(self, sql: str, params: tuple = ()) -> tuple[list[str], list[tuple]]:

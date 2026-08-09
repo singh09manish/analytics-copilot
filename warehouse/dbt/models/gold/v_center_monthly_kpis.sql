@@ -1,4 +1,4 @@
-{{ config(materialized='view') }}
+{{ config(materialized='view', secure=true) }}
 select
     date_trunc('month', f.log_date)::date as month,
     c.center_id,

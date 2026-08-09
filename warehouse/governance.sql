@@ -1,0 +1,19 @@
+-- Governance on Standard Edition (no native MASKING POLICY / TAG support).
+-- PII masking for DIM_TREATMENT_CENTER.contact_email is implemented as a SECURE VIEW
+-- in dbt (models/gold/dim_treatment_center.sql): the view CASE-masks by CURRENT_ROLE(),
+-- and the unmasked base data lives in SILVER.CENTERS, which COPILOT_APP_RO cannot read.
+--
+-- Defense in depth:
+--   - Server-side (bootstrap.sql): ALTER USER COPILOT_SVC SET DEFAULT_SECONDARY_ROLES = ()
+--     prevents the service user from automatically inheriting all role privileges.
+--   - Client-side (snowflake_client.py): each connection executes "USE SECONDARY ROLES NONE"
+--     to pin the session to the primary role only, enforcing RBAC strictly even if
+--     DEFAULT_SECONDARY_ROLES is misconfigured on the user.
+--
+-- On Enterprise Edition this would be a native masking policy + PII tag:
+--   CREATE MASKING POLICY MASK_EMAIL AS (val STRING) RETURNS STRING ->
+--     CASE WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN','COPILOT_ADMIN') THEN val
+--          ELSE '***MASKED***' END;
+--   ALTER TABLE ... MODIFY COLUMN CONTACT_EMAIL SET MASKING POLICY MASK_EMAIL;
+--
+-- Verification: uv run python ../scripts/verify_governance.py (run from backend/).
