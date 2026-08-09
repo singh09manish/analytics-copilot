@@ -24,3 +24,24 @@ def test_snowflake_error_is_graceful():
     r = answer_question("Which models?", FakeProvider(), sf)
     assert r.error_type == "snowflake"
     assert r.sql is not None
+
+
+def test_total_snowflake_outage_is_graceful():
+    class DeadSnowflake:
+        def run_query(self, sql, params=()):
+            raise RuntimeError("connection refused")
+
+    r = answer_question("Which models?", FakeProvider(), DeadSnowflake())
+    assert r.error_type == "snowflake"
+    assert "warehouse" in r.answer.lower()
+
+
+def test_summarize_failure_keeps_data():
+    class SummarizeFails(FakeProvider):
+        def text(self, system, user, max_tokens=1000):
+            raise RuntimeError("api overloaded")
+
+    r = answer_question("Which models?", SummarizeFails(), FakeSnowflake())
+    assert r.error_type == "llm"
+    assert r.rows == [["TrueBeam"], ["Halcyon"]]
+    assert r.sql is not None

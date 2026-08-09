@@ -35,7 +35,13 @@ def _rows_as_csv(columns: list[str], rows: list[tuple]) -> str:
 
 def answer_question(question: str, provider: LLMProvider, sf: SnowflakeClient) -> ChatResponse:
     tokens_in = tokens_out = 0
-    context = retrieve(question, sf)
+    try:
+        context = retrieve(question, sf)
+    except Exception:  # noqa: BLE001  # total warehouse outage must degrade, not crash
+        return ChatResponse(
+            answer="I couldn't reach the warehouse to look up context. Please try "
+                   "again in a moment.",
+            error_type="snowflake")
     try:
         draft_res = provider.structured(
             system=prompts.sql_system(context), user=question, schema=SqlDraft)
@@ -63,13 +69,21 @@ def answer_question(question: str, provider: LLMProvider, sf: SnowflakeClient) -
                    "misread the schema - try asking a bit differently.",
             sql=safe_sql, error_type="snowflake", retrieval_ms=context.retrieval_ms,
             assumptions=[str(e)[:200]], tokens_in=tokens_in, tokens_out=tokens_out)
-    summary = provider.text(
-        system=prompts.summarize_system(),
-        user=f"Question: {question}\n\nSQL:\n{safe_sql}\n\nResults (CSV, first "
-             f"{MAX_SUMMARY_ROWS} rows):\n{_rows_as_csv(columns, rows)}")
-    tokens_in += summary.tokens_in
-    tokens_out += summary.tokens_out
+    try:
+        summary = provider.text(
+            system=prompts.summarize_system(),
+            user=f"Question: {question}\n\nSQL:\n{safe_sql}\n\nResults (CSV, first "
+                 f"{MAX_SUMMARY_ROWS} rows):\n{_rows_as_csv(columns, rows)}")
+        answer = summary.value
+        tokens_in += summary.tokens_in
+        tokens_out += summary.tokens_out
+        err = None
+    except Exception:  # noqa: BLE001  # keep the data even if summarization fails
+        answer = ("I ran the query successfully but couldn't generate a summary. "
+                  "The results are shown below.")
+        err = "llm"
     return ChatResponse(
-        answer=summary.value, sql=safe_sql, columns=columns,
+        answer=answer, sql=safe_sql, columns=columns,
         rows=[list(r) for r in rows[:200]], assumptions=draft.assumptions,
-        retrieval_ms=context.retrieval_ms, tokens_in=tokens_in, tokens_out=tokens_out)
+        error_type=err, retrieval_ms=context.retrieval_ms,
+        tokens_in=tokens_in, tokens_out=tokens_out)
