@@ -1,2 +1,14 @@
 .superpowers/
 .DS_Store
+.env
+backend/.venv/
+data/seed/out/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+frontend/dist/
+warehouse/dbt/target/
+warehouse/dbt/dbt_packages/
+warehouse/dbt/logs/
+secrets/
