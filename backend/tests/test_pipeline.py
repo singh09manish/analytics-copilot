@@ -16,6 +16,11 @@ def test_guard_rejection_is_graceful():
                         FakeSnowflake())
     assert r.error_type == "validation"
     assert "safety rules" in r.answer
+    # Ops-log fields must survive a guard rejection (not come back NULL): the
+    # rejected draft SQL, the intent, and the tokens spent producing it.
+    assert r.sql == "DROP TABLE GOLD.DIM_MACHINE"
+    assert r.intent == "data_query"
+    assert r.tokens_in > 0
 
 
 def test_snowflake_error_is_graceful():

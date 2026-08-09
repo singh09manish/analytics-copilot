@@ -9,7 +9,7 @@ from langgraph.graph import END, StateGraph
 from copilot.agent import prompts
 from copilot.llm.schemas import QueryPlan, SqlDraft
 from copilot.retrieval import RetrievedContext, retrieve
-from copilot.sql_guard import validate
+from copilot.sql_guard import SqlGuardError, validate
 
 MAX_SUMMARY_ROWS = 50
 SCOPE_MESSAGE = ("I answer questions about the analytics warehouse - machines, "
@@ -44,13 +44,21 @@ def _rows_as_csv(columns: list, rows: list) -> str:
     return buf.getvalue()
 
 
-def build_graph(provider, sf, executor=None):
-    run_sql = executor or sf.run_query
+def build_graph(provider, sf, executor=None, use_memory: bool = True):
+    # `executor or sf.run_query` would silently fall through to sf.run_query for any
+    # falsy-but-valid executor object (e.g. a callable wrapper with __bool__ == False) —
+    # compare against None explicitly so MCP-injected executors are never bypassed.
+    run_sql = executor if executor is not None else sf.run_query
 
     def plan(state: AgentState) -> dict:
         user = prompts.user_with_history(state["question"], state.get("history", []))
-        res = provider.structured(system=prompts.plan_system(), user=user,
-                                  schema=QueryPlan, max_tokens=300)
+        try:
+            res = provider.structured(system=prompts.plan_system(), user=user,
+                                      schema=QueryPlan, max_tokens=300)
+        except Exception:  # noqa: BLE001 — LLM origin; classify as llm, never crash the graph
+            return {"error_type": "llm",
+                    "answer": "I couldn't process that request right now. Please try "
+                              "again in a moment."}
         return {"intent": res.value.intent,
                 "tokens_in": state.get("tokens_in", 0) + res.tokens_in,
                 "tokens_out": state.get("tokens_out", 0) + res.tokens_out}
@@ -67,9 +75,14 @@ def build_graph(provider, sf, executor=None):
     def glossary_answer(state: AgentState) -> dict:
         ctx = RetrievedContext.model_validate(state["context"])
         glossary = "\n".join(f"- {g}" for g in ctx.glossary)
-        res = provider.text(system=prompts.glossary_system(),
-                            user=f"Glossary entries:\n{glossary}\n\n"
-                                 f"Question: {state['question']}")
+        try:
+            res = provider.text(system=prompts.glossary_system(),
+                                user=f"Glossary entries:\n{glossary}\n\n"
+                                     f"Question: {state['question']}")
+        except Exception:  # noqa: BLE001 — LLM origin; classify as llm, never crash the graph
+            return {"answer": "I couldn't look that term up right now. Please try "
+                              "again in a moment.",
+                    "error_type": "llm"}
         return {"answer": res.value,
                 "tokens_in": state.get("tokens_in", 0) + res.tokens_in,
                 "tokens_out": state.get("tokens_out", 0) + res.tokens_out}
@@ -80,15 +93,28 @@ def build_graph(provider, sf, executor=None):
         if state.get("exec_error"):
             user += (f"\n\nYour previous SQL failed with this Snowflake error - "
                      f"fix it:\n{state['exec_error']}\nPrevious SQL:\n{state['draft_sql']}")
-        res = provider.structured(system=prompts.sql_system(ctx), user=user,
-                                  schema=SqlDraft)
+        try:
+            res = provider.structured(system=prompts.sql_system(ctx), user=user,
+                                      schema=SqlDraft)
+        except Exception:  # noqa: BLE001 — LLM origin; classify as llm, never crash the graph
+            return {"error_type": "llm",
+                    "answer": "I couldn't turn that into a query. Try rephrasing with "
+                              "the metric and time range you care about."}
         draft: SqlDraft = res.value
         return {"draft_sql": draft.sql, "assumptions": draft.assumptions,
                 "tokens_in": state.get("tokens_in", 0) + res.tokens_in,
                 "tokens_out": state.get("tokens_out", 0) + res.tokens_out}
 
     def do_validate(state: AgentState) -> dict:
-        return {"safe_sql": validate(state["draft_sql"])}
+        try:
+            return {"safe_sql": validate(state["draft_sql"])}
+        except SqlGuardError as e:
+            # Guard rejections are not retried (repair is execute-failure-only); keep
+            # the rejected draft_sql/tokens/intent/retrieval_ms already in state so
+            # Task 7's ops log gets a full record instead of NULLs.
+            return {"error_type": "validation",
+                    "answer": f"I generated a query the safety rules rejected "
+                              f"({e.reason}). Try rephrasing your question."}
 
     def execute(state: AgentState) -> dict:
         try:
@@ -116,7 +142,14 @@ def build_graph(provider, sf, executor=None):
 
     def remember(state: AgentState) -> dict:
         history = list(state.get("history", []))
-        history.append((state["question"], state.get("answer", "")[:500]))
+        answer = state.get("answer") or ""
+        if not answer:
+            # A turn can reach here with no answer set (e.g. repair exhausted after
+            # execute() failure). Record the failure reason instead of an empty string
+            # so the next turn's "A: " line in user_with_history() isn't blank.
+            fallback = state.get("exec_error") or state.get("error_type") or "no answer produced"
+            answer = f"[failed: {fallback}]"
+        history.append((state["question"], answer[:500]))
         return {"history": history[-6:]}
 
     g = StateGraph(AgentState)
@@ -131,13 +164,19 @@ def build_graph(provider, sf, executor=None):
     g.add_node("remember", remember)
 
     g.set_entry_point("plan")
-    g.add_conditional_edges("plan", lambda s: s["intent"], {
-        "data_query": "retrieve", "glossary_lookup": "retrieve",
-        "smalltalk": "scope_reply", "unsupported": "scope_reply"})
+    g.add_conditional_edges(
+        "plan", lambda s: "error" if s.get("error_type") else s["intent"],
+        {"data_query": "retrieve", "glossary_lookup": "retrieve",
+         "smalltalk": "scope_reply", "unsupported": "scope_reply",
+         "error": "remember"})
     g.add_conditional_edges("retrieve", lambda s: s["intent"], {
         "data_query": "generate", "glossary_lookup": "glossary_answer"})
-    g.add_edge("generate", "validate")
-    g.add_edge("validate", "execute")
+    g.add_conditional_edges(
+        "generate", lambda s: "error" if s.get("error_type") else "validate",
+        {"error": "remember", "validate": "validate"})
+    g.add_conditional_edges(
+        "validate", lambda s: "error" if s.get("error_type") else "execute",
+        {"error": "remember", "execute": "execute"})
     g.add_conditional_edges(
         "execute",
         lambda s: "repair" if s.get("exec_error") and s.get("repair_count", 0) <= 1
@@ -147,7 +186,10 @@ def build_graph(provider, sf, executor=None):
     g.add_edge("glossary_answer", "remember")
     g.add_edge("summarize", "remember")
     g.add_edge("remember", END)
-    return g.compile(checkpointer=_CHECKPOINTER)
+    # Anonymous (conversation_id=None) callers get a checkpointer-free compile so a
+    # never-reused thread_id doesn't mint a permanent, never-freed entry in the
+    # process-global InMemorySaver.
+    return g.compile(checkpointer=_CHECKPOINTER if use_memory else None)
 
 
 from langgraph.checkpoint.memory import InMemorySaver
