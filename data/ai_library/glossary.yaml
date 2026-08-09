@@ -1,0 +1,41 @@
+- term: fraction
+  definition: A single radiotherapy treatment session delivered to a patient. Daily machine
+    throughput is measured in delivered fractions.
+  related_tables: [GOLD.FACT_MACHINE_UTILIZATION]
+- term: delivered vs planned fractions
+  definition: Delivered fractions divided by planned fractions; the core throughput KPI.
+    Values below 95% usually indicate downtime or scheduling gaps.
+  related_tables: [GOLD.FACT_MACHINE_UTILIZATION, GOLD.V_CENTER_MONTHLY_KPIS]
+- term: downtime percent
+  definition: downtime_hours / (uptime_hours + downtime_hours) * 100 for a machine-day or
+    aggregate. The uptime SLA target is 98%.
+  related_tables: [GOLD.FACT_MACHINE_UTILIZATION]
+- term: uptime SLA
+  definition: Contractual availability target of 98% uptime per machine per quarter.
+  related_tables: [GOLD.FACT_MACHINE_UTILIZATION]
+- term: MTTR
+  definition: Mean time to repair — average resolution_hours over closed service tickets.
+  related_tables: [GOLD.FACT_SERVICE_TICKET]
+- term: critical ticket
+  definition: Service ticket with severity 'Critical'; machine is typically non-operational.
+  related_tables: [GOLD.FACT_SERVICE_TICKET]
+- term: installed base
+  definition: The set of machines installed at treatment centers, tracked in DIM_MACHINE
+    with model, install_date and status.
+  related_tables: [GOLD.DIM_MACHINE]
+- term: treatment center
+  definition: A hospital or clinic operating one or more radiotherapy machines.
+  related_tables: [GOLD.DIM_TREATMENT_CENTER]
+- term: linac model
+  definition: Machine product family (TrueBeam, TrueBeam STx, Halcyon, Ethos, Clinac iX,
+    ProBeam) stored in DIM_MACHINE.model.
+  related_tables: [GOLD.DIM_MACHINE]
+- term: go-live
+  definition: Date a treatment center began clinical operation (DIM_TREATMENT_CENTER.go_live_date).
+  related_tables: [GOLD.DIM_TREATMENT_CENTER]
+- term: region
+  definition: Sales/operations region of a center - one of NA, EMEA, APAC, LATAM.
+  related_tables: [GOLD.DIM_TREATMENT_CENTER]
+- term: open ticket
+  definition: Service ticket with no closed_at timestamp (is_open = true).
+  related_tables: [GOLD.FACT_SERVICE_TICKET]

@@ -1,0 +1,42 @@
+- table_name: GOLD.DIM_TREATMENT_CENTER
+  card: |
+    GOLD.DIM_TREATMENT_CENTER - one row per treatment center (hospital/clinic).
+    Columns: center_id (PK, 'C000'), center_name, region (NA/EMEA/APAC/LATAM),
+    country, city, beds (int), contact_email (PII, masked for most roles),
+    go_live_date (date). Join to facts via center_id.
+    Sample questions: how many centers per region; newest go-lives.
+- table_name: GOLD.DIM_MACHINE
+  card: |
+    GOLD.DIM_MACHINE - one row per installed radiotherapy machine (linac).
+    Columns: machine_id (PK, 'M0000'), center_id (FK), model (TrueBeam, TrueBeam STx,
+    Halcyon, Ethos, Clinac iX, ProBeam), serial, install_date (date), sw_version,
+    status (Active/Decommissioned).
+    Sample questions: installed base by model/region; oldest machines.
+- table_name: GOLD.DIM_DATE
+  card: |
+    GOLD.DIM_DATE - calendar spine 2024-01-01..2026-12-31. Columns: date_day (PK),
+    year, quarter, month, month_name, day_of_week, is_weekend.
+- table_name: GOLD.FACT_MACHINE_UTILIZATION
+  card: |
+    GOLD.FACT_MACHINE_UTILIZATION - one row per machine per day, ~140k rows,
+    2024-08-08..2026-08-07. Columns: log_date, machine_id (FK), center_id (FK),
+    planned_fractions, delivered_fractions, uptime_hours, downtime_hours (0 when
+    no fault), downtime_reason (NULL when no downtime; values like 'Beam fault',
+    'Cooling system', 'Scheduled maintenance').
+    downtime percent = downtime_hours/(uptime_hours+downtime_hours)*100.
+    Sample questions: downtime by center last quarter; utilization trends by model.
+- table_name: GOLD.FACT_SERVICE_TICKET
+  card: |
+    GOLD.FACT_SERVICE_TICKET - one row per service ticket, ~8k rows. Columns:
+    ticket_id (PK), machine_id (FK), center_id (FK), opened_at (timestamp),
+    closed_at (NULL if open), severity (Critical/High/Medium/Low), category
+    (Beam Generation/Imaging/Software/Cooling/Mechanical/Electrical),
+    resolution_hours, parts_cost, is_open (boolean).
+    MTTR = AVG(resolution_hours) over closed tickets.
+    Sample questions: MTTR by severity; open critical tickets; parts cost by model.
+- table_name: GOLD.V_CENTER_MONTHLY_KPIS
+  card: |
+    GOLD.V_CENTER_MONTHLY_KPIS - pre-aggregated monthly KPIs per center (view).
+    Columns: month (first of month), center_id, center_name, region,
+    planned_fractions, delivered_fractions, delivery_pct, total_downtime_hours,
+    downtime_pct. Prefer this view for monthly/trend questions.
