@@ -24,7 +24,11 @@
     no fault), downtime_reason (NULL when no downtime; values like 'Beam fault',
     'Cooling system', 'Scheduled maintenance').
     downtime percent = downtime_hours/(uptime_hours+downtime_hours)*100.
-    Sample questions: downtime by center last quarter; utilization trends by model.
+    No model column here - for per-model aggregations (e.g. worst delivery
+    percentage by model), JOIN GOLD.DIM_MACHINE m USING (machine_id) and
+    GROUP BY m.model.
+    Sample questions: downtime by center last quarter; utilization trends by model;
+    delivery percentage by model.
 - table_name: GOLD.FACT_SERVICE_TICKET
   card: |
     GOLD.FACT_SERVICE_TICKET - one row per service ticket, ~8k rows. Columns:
