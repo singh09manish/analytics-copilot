@@ -20,4 +20,6 @@ export interface Message {
   role: "user" | "assistant";
   text: string;
   data?: ChatResponse;
+  feedback?: "up" | "down";
+  error?: boolean;
 }

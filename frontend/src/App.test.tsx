@@ -111,3 +111,100 @@ test("a 401 from /chat clears auth and returns the user to the login screen", as
   await waitFor(() => expect(screen.getByPlaceholderText("password")).toBeDefined());
   expect(localStorage.getItem("copilot_auth")).toBeNull();
 });
+
+test("the same conversation id is sent on every turn within a session", async () => {
+  setAuth({ token: fakeJwt(), role: "analyst", email: "analyst@demo" });
+  const answer = (requestId: string) => ({
+    answer: "ok", sql: null, columns: [], rows: [], assumptions: [],
+    error_type: null, retrieval_ms: 1, intent: "metric", request_id: requestId,
+  });
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse(200, answer("r1")))
+    .mockResolvedValueOnce(jsonResponse(200, answer("r2")));
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<App />);
+  const input = screen.getByPlaceholderText(/Ask a question/);
+
+  fireEvent.change(input, { target: { value: "question one" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByText("ok")).toBeDefined());
+
+  fireEvent.change(input, { target: { value: "question two" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+  const body1 = JSON.parse(fetchMock.mock.calls[0][1].body);
+  const body2 = JSON.parse(fetchMock.mock.calls[1][1].body);
+  expect(body1.conversation_id).toBeTruthy();
+  expect(body1.conversation_id).not.toContain(":");
+  expect(body2.conversation_id).toBe(body1.conversation_id);
+});
+
+test("thumbs-up feedback posts to /feedback once and shows the recorded state", async () => {
+  setAuth({ token: fakeJwt(), role: "analyst", email: "analyst@demo" });
+  const chat = {
+    answer: "42 machines", sql: null, columns: [], rows: [], assumptions: [],
+    error_type: null, retrieval_ms: 5, intent: "metric", request_id: "r1",
+  };
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse(200, chat))
+    .mockResolvedValueOnce(jsonResponse(200, { status: "recorded" }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<App />);
+  fireEvent.change(screen.getByPlaceholderText(/Ask a question/), {
+    target: { value: "how many machines are online" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(screen.getByText("42 machines")).toBeDefined());
+
+  fireEvent.click(screen.getByRole("button", { name: "👍" }));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+  const [url, options] = fetchMock.mock.calls[1];
+  expect(String(url)).toContain("/feedback");
+  const body = JSON.parse(options.body);
+  expect(body).toMatchObject({ request_id: "r1", rating: "up" });
+
+  await waitFor(() => expect(screen.getByText("feedback: 👍")).toBeDefined());
+  // Re-clicking is a no-op: the buttons are gone, so a second POST never fires.
+  expect(screen.queryByRole("button", { name: "👍" })).toBeNull();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+test("assumptions render under the SQL panel when present", async () => {
+  setAuth({ token: fakeJwt(), role: "analyst", email: "analyst@demo" });
+  const chat = {
+    answer: "12 centers", sql: "select 1", columns: [], rows: [],
+    assumptions: ["Assumed last full quarter = Q2 2026"],
+    error_type: null, retrieval_ms: 5, intent: "metric", request_id: "r1",
+  };
+  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(200, chat));
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<App />);
+  fireEvent.change(screen.getByPlaceholderText(/Ask a question/), {
+    target: { value: "how many centers" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+  await waitFor(() => expect(screen.getByText("Assumptions")).toBeDefined());
+  expect(screen.getByText("Assumed last full quarter = Q2 2026")).toBeDefined();
+});
+
+test("a network failure renders an error-styled message", async () => {
+  setAuth({ token: fakeJwt(), role: "analyst", email: "analyst@demo" });
+  const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<App />);
+  fireEvent.change(screen.getByPlaceholderText(/Ask a question/), {
+    target: { value: "how many machines are online" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+  const errText = await screen.findByText(/Request failed/);
+  expect(errText.closest(".msg")?.className).toContain("err");
+});
