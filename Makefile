@@ -8,7 +8,12 @@ endif
 # Export an absolute override that profiles.yml prefers when set.
 export SNOWFLAKE_PRIVATE_KEY_PATH_ABS := $(CURDIR)/$(SNOWFLAKE_PRIVATE_KEY_PATH)
 
-UV := cd backend && uv
+# `uv` is on PATH in CI (astral-sh/setup-uv) but a local install puts it in
+# ~/.local/bin, which is not on the PATH make inherits from a non-login shell --
+# so `make lint` failed locally with "uv: command not found". Prefer whatever is
+# on PATH, fall back to the standard install location.
+UV_BIN := $(shell command -v uv 2>/dev/null || echo $(HOME)/.local/bin/uv)
+UV := cd backend && $(UV_BIN)
 
 .PHONY: install lint test test-live seed api web check-env load-bronze dbt-run dbt-test ai-library mcp-server
 
