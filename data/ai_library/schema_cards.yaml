@@ -18,7 +18,7 @@
     year, quarter, month, month_name, day_of_week, is_weekend.
 - table_name: GOLD.FACT_MACHINE_UTILIZATION
   card: |
-    GOLD.FACT_MACHINE_UTILIZATION - one row per machine per day, ~140k rows,
+    GOLD.FACT_MACHINE_UTILIZATION - one row per machine per day, 146000 rows,
     2024-08-08..2026-08-07. Columns: log_date, machine_id (FK), center_id (FK),
     planned_fractions, delivered_fractions, uptime_hours, downtime_hours (0 when
     no fault), downtime_reason (NULL when no downtime; values like 'Beam fault',
