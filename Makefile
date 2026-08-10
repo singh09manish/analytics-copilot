@@ -15,7 +15,7 @@ export SNOWFLAKE_PRIVATE_KEY_PATH_ABS := $(CURDIR)/$(SNOWFLAKE_PRIVATE_KEY_PATH)
 UV_BIN := $(shell command -v uv 2>/dev/null || echo $(HOME)/.local/bin/uv)
 UV := cd backend && $(UV_BIN)
 
-.PHONY: install lint test test-live seed api web check-env load-bronze dbt-run dbt-test ai-library mcp-server
+.PHONY: install lint test test-live seed api web check-env load-bronze dbt-run dbt-test ai-library mcp-server aws-plan aws-up aws-down aws-secret aws-smoke
 
 install:
 	$(UV) sync
@@ -55,3 +55,24 @@ check-env:
 
 mcp-server:
 	$(UV) run python ../mcp_server/server.py
+
+TF := ~/.local/bin/terraform -chdir=infra
+
+aws-plan:
+	$(TF) init -input=false
+	$(TF) plan
+
+aws-up:
+	$(TF) init -input=false
+	$(TF) apply -auto-approve
+	@echo "App URL: $$($(TF) output -raw app_url)"
+
+aws-secret:
+	$(UV) run python ../scripts/aws_bootstrap_secret.py
+
+aws-smoke:
+	@test -n "$(ANALYST_PW)" || (echo "usage: make aws-smoke ANALYST_PW=... ADMIN_PW=..." && exit 1)
+	$(UV) run python ../scripts/aws_smoke.py "$$($(TF) output -raw app_url)" "$(ANALYST_PW)" "$(ADMIN_PW)"
+
+aws-down:
+	$(TF) destroy -auto-approve

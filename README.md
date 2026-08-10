@@ -79,6 +79,61 @@ that verification is pending.
    1's allowlist. `COPILOT_WH` carries `STATEMENT_TIMEOUT_IN_SECONDS = 60` so a
    runaway generated query cannot outlive the request that started it.
 
+## Deploying to AWS
+
+The one-command path from an empty AWS account to a live URL:
+
+```bash
+cp infra/terraform.tfvars.example infra/terraform.tfvars   # edit github_repo first
+make aws-up                                                 # terraform apply; prints app_url
+make aws-secret                                              # pushes .env + the Snowflake key into Secrets Manager
+git push                                                      # deploy.yml builds the image and rolls the service
+```
+
+`make aws-down` tears the whole stack back down (`terraform destroy`, buckets and the
+ECR repo are `force_destroy`d so nothing stalls on leftover objects).
+
+### Architecture decisions
+
+- **MCP server runs inside the backend container, over stdio — not as a sidecar.** The
+  spec sketched a sidecar over localhost HTTP. stdio is what the client is tested
+  against, and adding an HTTP transport days before a demo is new, untested code on the
+  critical path. It is still a real MCP server over a real transport; a sidecar is the
+  answer to "how would you scale this?" — independent scaling, language independence,
+  a network boundary you can authenticate — not a requirement to ship one.
+- **Terraform state is local, not in S3/DynamoDB.** A remote backend is the right answer
+  for a team, but provisioning it is a second bootstrap problem for a single operator.
+  State files are gitignored (`infra/terraform.tfvars`, `*.tfstate*`), which means
+  **teardown must happen from the same machine that ran `terraform apply`** — there is
+  no shared state for another machine or CI to destroy from.
+- **Fargate tasks run in public subnets with public IPs.** The textbook layout is
+  private subnets behind a NAT gateway, but a NAT gateway runs ~$32/month — more than
+  the rest of this stack combined — and the task only needs outbound egress to
+  Snowflake and the Anthropic API. Inbound traffic is still restricted to the ALB's
+  security group, so the public IP is not itself an entry point. A deliberate cost
+  trade-off, stated rather than hidden.
+- **One CloudFront distribution fronts both the SPA and the API.** The default
+  behaviour serves the SPA from a private S3 bucket via Origin Access Control; `/api/*`
+  forwards to the ALB. This gives HTTPS everywhere without owning a domain and
+  collapses the app to a single origin, so CORS is moot in production.
+- **Secrets never touch Terraform state.** Terraform creates the Secrets Manager
+  container but not its contents; `scripts/aws_bootstrap_secret.py` pushes the real
+  values from `.env` directly via the AWS CLI.
+
+### Cost
+
+Roughly **$1-2/day** while the stack sits idle between demos:
+
+| Resource | ~cost/day |
+|---|---|
+| Fargate task (0.5 vCPU / 2GB, always on) | ~$0.90 |
+| Application Load Balancer | ~$0.55 |
+| CloudFront, S3, ECR, Secrets Manager, CloudWatch logs (7-day retention) | ~$0.10-0.30 |
+| NAT gateway | $0 (not used — see above) |
+
+Run `make aws-down` between demos if the cost matters more than the ~5-15 minutes it
+takes CloudFront to redeploy on the next `make aws-up`.
+
 ## Connect Claude Desktop to the MCP server
 
 The same MCP tool server the agent uses can be attached directly to Claude
