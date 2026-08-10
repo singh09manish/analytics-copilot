@@ -1,13 +1,18 @@
 import { useRef, useState } from "react";
-import { sendChat } from "./api";
+import { AuthExpiredError, sendChat } from "./api";
+import { clearAuth, getAuth, type AuthState } from "./auth";
+import Login from "./Login";
 import type { Message } from "./types";
 import "./App.css";
 
 export default function App() {
+  const [authState, setAuthState] = useState<AuthState | null>(getAuth());
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
+
+  if (!authState) return <Login onLogin={setAuthState} />;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -17,9 +22,13 @@ export default function App() {
     setMessages((m) => [...m, { role: "user", text: q }]);
     setBusy(true);
     try {
-      const data = await sendChat(q);
+      const data = await sendChat(q, null);
       setMessages((m) => [...m, { role: "assistant", text: data.answer, data }]);
     } catch (err) {
+      if (err instanceof AuthExpiredError) {
+        setAuthState(null);
+        return;
+      }
       setMessages((m) => [...m, { role: "assistant", text: `Request failed: ${err}` }]);
     } finally {
       setBusy(false);
@@ -32,6 +41,12 @@ export default function App() {
       <header>
         <h1>Analytics Copilot</h1>
         <span className="sub">Ask about machines, centers, utilization, service tickets</span>
+        <div className="header-right">
+          <span className={`badge ${authState.role}`}>{authState.role}</span>
+          <button className="linklike" onClick={() => { clearAuth(); setAuthState(null); }}>
+            sign out
+          </button>
+        </div>
       </header>
       <main>
         {messages.length === 0 && (

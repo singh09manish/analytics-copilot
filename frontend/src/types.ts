@@ -6,6 +6,14 @@ export interface ChatResponse {
   assumptions: string[];
   error_type: string | null;
   retrieval_ms: number;
+  intent: string | null;
+  request_id: string | null;
+}
+
+export interface LoginResponse {
+  token: string;
+  role: "analyst" | "admin";
+  email: string;
 }
 
 export interface Message {

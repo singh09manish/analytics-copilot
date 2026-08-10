@@ -28,3 +28,17 @@ button { padding: 11px 20px; border-radius: 10px; border: 0; background: #1d4ed8
          color: white; font-weight: 600; cursor: pointer; }
 button:disabled { opacity: 0.5; cursor: default; }
 .busy { color: #8b94a7; font-style: italic; }
+.login-shell { display:flex; align-items:center; justify-content:center; height:100vh; }
+.login-card { display:flex; flex-direction:column; gap:10px; width:320px;
+              background:#1a2233; border:1px solid #232b3d; border-radius:14px; padding:28px; }
+.login-card h1 { margin:0; font-size:20px; }
+.login-card .sub { margin:0 0 6px; color:#8b94a7; font-size:13px; }
+.login-error { color:#ff8a80; font-size:13px; }
+.hint-small { color:#8b94a7; font-size:11.5px; margin:6px 0 0; }
+.header-right { display:flex; gap:10px; align-items:center; margin-left:auto; }
+.badge { font-size:11px; font-weight:700; text-transform:uppercase; padding:2px 8px;
+         border-radius:99px; background:#1d4ed8; }
+.badge.admin { background:#b42318; }
+.linklike { background:none; border:none; color:#8b94a7; cursor:pointer; padding:0;
+            font-size:12px; }
+header { display:flex; align-items:center; gap:12px; }
