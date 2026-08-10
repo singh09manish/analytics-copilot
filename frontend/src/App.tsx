@@ -27,6 +27,7 @@ export default function App() {
     } catch (err) {
       if (err instanceof AuthExpiredError) {
         setAuthState(null);
+        setMessages([]);
         return;
       }
       setMessages((m) => [...m, { role: "assistant", text: `Request failed: ${err}` }]);
@@ -43,7 +44,7 @@ export default function App() {
         <span className="sub">Ask about machines, centers, utilization, service tickets</span>
         <div className="header-right">
           <span className={`badge ${authState.role}`}>{authState.role}</span>
-          <button className="linklike" onClick={() => { clearAuth(); setAuthState(null); }}>
+          <button className="linklike" onClick={() => { clearAuth(); setAuthState(null); setMessages([]); }}>
             sign out
           </button>
         </div>

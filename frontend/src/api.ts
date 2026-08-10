@@ -5,6 +5,16 @@ const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 export class AuthExpiredError extends Error {}
 
+// Carries the HTTP status so callers (e.g. Login) can distinguish a real auth
+// rejection (401) from a network/server failure without parsing message text.
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number) {
+    super(`API ${status}`);
+    this.status = status;
+  }
+}
+
 async function post<T>(path: string, body: unknown, authed = true): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (authed) {
@@ -20,7 +30,7 @@ async function post<T>(path: string, body: unknown, authed = true): Promise<T> {
     clearAuth();
     throw new AuthExpiredError("session expired");
   }
-  if (!res.ok) throw new Error(`API ${res.status}`);
+  if (!res.ok) throw new ApiError(res.status);
   return res.json();
 }
 

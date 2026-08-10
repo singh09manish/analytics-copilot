@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { login } from "./api";
+import { ApiError, login } from "./api";
 import { setAuth, type AuthState } from "./auth";
 
 export default function Login({ onLogin }: { onLogin: (a: AuthState) => void }) {
@@ -17,8 +17,12 @@ export default function Login({ onLogin }: { onLogin: (a: AuthState) => void }) 
       const a: AuthState = { token: res.token, role: res.role, email: res.email };
       setAuth(a);
       onLogin(a);
-    } catch {
-      setError("Invalid credentials");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setError("Invalid credentials");
+      } else {
+        setError("Can't reach the server right now. Please try again.");
+      }
     } finally {
       setBusy(false);
     }
