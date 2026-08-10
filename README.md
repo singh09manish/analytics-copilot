@@ -19,8 +19,10 @@ role-scoped Snowflake session
 (`COPILOT_APP_RO` masked, `COPILOT_ADMIN` unmasked) — so the same question
 returns masked or real PII depending on who's asking. Every request is
 written to `COPILOT.REQUEST_LOG`, and every answer can be thumbs-up/down'd
-with a comment into `COPILOT.FEEDBACK`. Still ahead: an eval harness, an
-admin console, and AWS deployment (Terraform, ECS, CloudWatch).
+with a comment into `COPILOT.FEEDBACK`. The app is deployed to AWS (Terraform,
+ECS Fargate, CloudFront) — see "Deploying to AWS" below. Still ahead: an eval
+harness and an admin console; CloudWatch telemetry has started landing on
+`feat/phase3b-evals`.
 
 ## Documentation
 
@@ -55,10 +57,23 @@ Architecture: see `docs/superpowers/specs/2026-08-08-analytics-copilot-design.md
 
 ## Status
 
-The LangGraph agent, MCP tool server, JWT RBAC, request logging, and feedback
-loop above are implemented and covered by the unit suite (`make test`), but
-Phase 2 has not yet been live-verified end-to-end against Snowflake —
-that verification is pending.
+**Verified live.** Phase 2 (LangGraph agent, MCP tool server, JWT RBAC, request logging,
+feedback loop) was live-verified end-to-end against Snowflake — 5/5 live tests green, RBAC
+masking confirmed (analyst sees `***MASKED***` contact emails, admin sees real ones, same
+question) — and tagged `v0.2-agent`. Phase 3A (AWS deployment) is live and tagged
+`v0.3-aws`: the app runs on ECS Fargate behind CloudFront, deployed by GitHub Actions, with
+that same RBAC masking re-verified end to end through CloudFront -> ALB -> Fargate -> MCP ->
+Snowflake on the deployed stack.
+
+**In progress, not done.** Phase 3B (eval harness, CloudWatch dashboards/alarms, admin
+console) is being built on `feat/phase3b-evals`. Telemetry has landed — EMF metrics are
+emitted per request (answer outcome, latency, retrieval mode, tokens) — but the eval harness
+and admin console have not started yet.
+
+The hermetic unit suite (`make test`) is green for both backend and frontend. Live tests
+(`pytest -m live`, `backend/tests/live/`) hit a real Snowflake warehouse, cost money, and are
+excluded from `make test` by default — see [docs/FLOW.md §9](docs/FLOW.md#9-tests) for
+current counts.
 
 ## Defense in depth, and what each layer is not
 

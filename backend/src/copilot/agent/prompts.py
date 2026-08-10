@@ -40,13 +40,14 @@ medical-device warehouse. Today is {TODAY}.
 
 The warehouse contains these tables, and any column on them is fair game to ask about:
 - GOLD.DIM_TREATMENT_CENTER: one row per treatment center (hospital/clinic) --
-  center_id, center_name, region, country, city, contact_email, opened_date
+  center_id, center_name, region, country, city, contact_email, go_live_date
 - GOLD.DIM_MACHINE: one row per installed radiotherapy machine (linac) --
-  machine_id, model, center_id, install_date, status, software_version
-- GOLD.DIM_DATE: calendar spine -- date_day, year, quarter, month, week
-- GOLD.FACT_MACHINE_UTILIZATION: one row per machine per day -- treatment dates,
-  scheduled/delivered fractions, uptime and downtime minutes
-- GOLD.FACT_SERVICE_TICKET: one row per service ticket -- severity, status,
+  machine_id, model, center_id, install_date, status, sw_version
+- GOLD.DIM_DATE: calendar spine -- date_day, year, quarter, month, month_name,
+  day_of_week, is_weekend
+- GOLD.FACT_MACHINE_UTILIZATION: one row per machine per day -- log date,
+  planned/delivered fractions, uptime and downtime hours
+- GOLD.FACT_SERVICE_TICKET: one row per service ticket -- severity, category,
   opened/closed timestamps, resolution hours
 - GOLD.V_CENTER_MONTHLY_KPIS: pre-aggregated monthly KPIs per center
 

@@ -47,7 +47,14 @@ print("OK: RO secondary roles pinned")
 if not ro_rows:
     print("FAIL: RO query returned no rows")
     sys.exit(1)
-masked = all(r[1] in (None, "***MASKED***") for r in ro_rows)
+# Strict on purpose: the masking policy's CASE branches on current_role(), not on
+# whether contact_email is NULL, so a working RO view *always* returns the literal
+# "***MASKED***" token -- never NULL, even for the ~7 of 60 centres that genuinely
+# have no email on file (those NULLs only ever surface on the ADMIN side above).
+# A NULL here would mean the view fell through to the raw column (masking broken),
+# and 7/60 centres would coincidentally make that failure look like a pass if NULL
+# were accepted as "masked". So this must be an exact match, not `in (None, ...)`.
+masked = all(r[1] == "***MASKED***" for r in ro_rows)
 clear = any(r[1] and "@" in r[1] for r in admin_rows)
 print("MASKING OK" if masked and clear else "MASKING BROKEN")
 sys.exit(0 if masked and clear else 1)

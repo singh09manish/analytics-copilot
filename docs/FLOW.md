@@ -9,7 +9,7 @@ Snowflake result and back.
 Keep the `file:line` references accurate; a stale line number is worse than none. See
 [DECISIONS.md](DECISIONS.md) for *why* each of these things is the way it is.
 
-*Verified against the tree at commit `61e713b`. Line numbers reflect that commit.*
+*Verified against the tree at commit `81c86ae`. Line numbers reflect that commit.*
 
 ---
 
@@ -49,36 +49,36 @@ The gate exists because the JWT's `role` claim selects the Snowflake session, so
 token is privilege escalation. A weak or public signing key is not a misconfiguration to
 warn about — it is a reason not to run.
 
-### 1.2 Dependency construction — `api/main.py:86-123`
+### 1.2 Dependency construction — `api/main.py:99-136`
 
 `_deps()` is called by every request handler:
 
-1. `main.py:104` — fast path: if `app.state.provider` exists, return immediately, no lock.
-2. `main.py:106-108` — take `_deps_lock` (`main.py:83`), then re-check inside the lock
+1. `main.py:117-118` — fast path: if `app.state.provider` exists, return immediately, no lock.
+2. `main.py:119-121` — take `_deps_lock` (`main.py:96`), then re-check inside the lock
    (double-checked locking; a thread that lost the race returns the built state).
-3. `main.py:113-117` — build **into locals**, in order: `AnthropicProvider()`, then
+3. `main.py:126-130` — build **into locals**, in order: `AnthropicProvider()`, then
    `SnowflakeClient` for `COPILOT_APP_RO`, `COPILOT_ADMIN`, and `COPILOT_APP_WRITER`, then
    the MCP executor if `use_mcp`.
-4. `main.py:118-122` — only once all five succeed, publish all of them to `app.state`.
+4. `main.py:131-135` — only once all five succeed, publish all of them to `app.state`.
 
 Publishing last is load-bearing. An earlier version set `app.state.provider` first, and
 because sync endpoints run in FastAPI's threadpool, concurrent first requests read
 half-initialised state — measured at seven of eight returning 500.
 
 A Snowflake client failure propagates (a 500 on that request, retried cleanly next time).
-Only the MCP executor is allowed to fail softly: `_build_executor` (`main.py:132-143`)
+Only the MCP executor is allowed to fail softly: `_build_executor` (`main.py:145-156`)
 catches any exception, logs with a traceback, and returns `None` so the app degrades to
 direct execution rather than refusing to answer.
 
-### 1.3 MCP recovery — `api/main.py:146-171`
+### 1.3 MCP recovery — `api/main.py:159-184`
 
 `_live_executor(state)` runs on every chat request:
 
-- `main.py:156-158` — `None` executor (disabled or failed at startup) → return `None`.
-- `main.py:159-161` — healthy executor → return it unchanged.
-- `main.py:162-171` — broken → under the lock, re-check nobody else already replaced it,
+- `main.py:169-171` — `None` executor (disabled or failed at startup) → return `None`.
+- `main.py:172-174` — healthy executor → return it unchanged.
+- `main.py:175-184` — broken → under the lock, re-check nobody else already replaced it,
   best-effort `close()`, rebuild with a **15-second** timeout (`_MCP_REBUILD_READY_TIMEOUT`,
-  `main.py:129`) rather than the 60-second cold-start budget, and republish.
+  `main.py:142`) rather than the 60-second cold-start budget, and republish.
 
 Without this, a dead subprocess stayed on `app.state` forever and every request blocked on
 it twice — once normally, once through the repair edge.
@@ -89,37 +89,37 @@ it twice — once normally, once through the repair edge.
 
 `POST /api/chat` → `main.py:259`.
 
-1. **Authenticate** — `_require_identity` (`main.py:207-224`). Reads the `Authorization`
-   header (`main.py:217-219`); missing or non-`Bearer` → 401. Decodes **once** via
+1. **Authenticate** — `_require_identity` (`main.py:220-237`). Reads the `Authorization`
+   header (`main.py:230-232`); missing or non-`Bearer` → 401. Decodes **once** via
    `auth.decode_token` (`auth.py:39-43`, `algorithms=["HS256"]`), returns
    `(payload["role"], payload["sub"])`. Catches `AuthError` **and** `KeyError` together
-   (`main.py:223-224`) so a validly-signed token missing a claim is a 401, not a 500.
-2. **Validate input** — empty question → 400 (`main.py:248-249`). A `conversation_id`
-   containing `:` → 400 (`main.py:255-256`), because `:` separates the checkpointer's
+   (`main.py:236-237`) so a validly-signed token missing a claim is a 401, not a 500.
+2. **Validate input** — empty question → 400 (`main.py:261-262`). A `conversation_id`
+   containing `:` → 400 (`main.py:268-269`), because `:` separates the checkpointer's
    thread key and must stay unambiguous.
-3. **Build dependencies** — `_deps()` (`main.py:257`).
-4. **Pick the retrieval session** — `main.py:258`:
+3. **Build dependencies** — `_deps()` (`main.py:270`).
+4. **Pick the retrieval session** — `main.py:271`:
    `sf = state.sf_admin if role == "admin" else state.sf_ro`.
-5. **Pick the execution role** — `main.py:267`:
+5. **Pick the execution role** — `main.py:280`:
    `sf_role = "COPILOT_ADMIN" if role == "admin" else "COPILOT_APP_RO"`. Derived only from
    the verified token, fail-closed to the masked role. Masking CASEs on `CURRENT_ROLE()`,
    so the role must follow the query all the way to execution, not just retrieval.
-6. **Get a live executor** — `_live_executor(state)` (`main.py:272`), then bind the role
-   onto it with `functools.partial` (`main.py:273-274`) so the graph still sees the
+6. **Get a live executor** — `_live_executor(state)` (`main.py:285`), then bind the role
+   onto it with `functools.partial` (`main.py:286-287`) so the graph still sees the
    `(sql) -> (columns, rows)` shape it expects.
 7. **Namespace the conversation** — `_scoped_conversation_id(email, id)`
-   (`main.py:184-192`) returns `f"{email}:{conversation_id}"`, or `None` if the client sent
+   (`main.py:197-205`) returns `f"{email}:{conversation_id}"`, or `None` if the client sent
    none. `None` stays `None`: an anonymous turn gets no memory and mints no checkpoint.
-8. **Run the agent** — `answer_question(...)` (`main.py:282-283` → `pipeline.py:26`).
-9. **Log the request** — `log_request(...)` (`main.py:284-287`). The logged conversation id
-   comes from `_logged_conversation_id` (`main.py:195-204`), which is *always*
+8. **Run the agent** — `answer_question(...)` (`main.py:295-296` → `pipeline.py:26`).
+9. **Log the request** — `log_request(...)` (`main.py:298-301`). The logged conversation id
+   comes from `_logged_conversation_id` (`main.py:208-217`), which is *always*
    identity-scoped and never `None` — `REQUEST_LOG` has no user column, so without this an
    audit row cannot name its actor.
-10. **Return** the `ChatResponse` (`main.py:288`).
+10. **Return** the `ChatResponse` (`main.py:309`).
 
-`POST /api/feedback` (`main.py:304-318`) follows the same auth path, validates the rating,
+`POST /api/feedback` (`main.py:312-326`) follows the same auth path, validates the rating,
 and writes via `sf_writer`. Unlike request logging, a feedback write failure **is**
-surfaced — 503 (`main.py:316-317`) — because the user is owed the truth about whether their
+surfaced — 503 (`main.py:324-325`) — because the user is owed the truth about whether their
 feedback was recorded.
 
 ---
@@ -440,8 +440,10 @@ COPILOT schema sits outside the medallion and holds the AI library and ops table
 - **Live marking** — `backend/pyproject.toml:30-31` sets `addopts = "-m 'not live'"`, so
   live tests are excluded by default rather than by convention.
   `tests/live/test_slice_live.py:7` applies `pytestmark = pytest.mark.live` to all five.
-- **Counts, from actual runs:** backend **171 passed, 5 deselected**; frontend **18 passed**
-  across 2 files.
+- **Counts, from an actual run on 2026-08-10 (commit `81c86ae`):** backend **184 passed, 5
+  deselected**; frontend **18 passed** across 2 files. Phase 3B is still landing on this
+  branch, so treat this as a snapshot rather than a pinned target — reproduce with
+  `cd backend && uv run pytest -q -m "not live"` and `cd frontend && npm test -- --run`.
 
 ---
 

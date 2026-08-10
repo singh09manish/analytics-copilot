@@ -221,8 +221,10 @@ parsing was rejected — it fails in ways that are tedious to detect and impossi
 An early version did `next(block for block in response if block.type == "tool_use")`,
 which raises `StopIteration` when the model refuses or the response is truncated —
 turning a routine API outcome into a crash. The provider now returns a three-tuple
-carrying the response and error text, checks `stop_reason`, and routes the miss into the
-retry path.
+carrying the response and error text, and branches on whether a `tool_use` block is
+present (`provider.py:41-44`) rather than on `stop_reason` — `stop_reason` is only
+interpolated into the error text for diagnostics, not checked — and routes the miss into
+the retry path.
 
 ### `claude-sonnet-5`, configurable
 Good enough for schema-constrained SQL generation at meaningfully lower cost and latency
