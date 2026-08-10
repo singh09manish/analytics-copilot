@@ -656,3 +656,23 @@ def test_chat_surfaces_the_retrieval_mode(monkeypatch, caplog):
     # FakeSnowflake raises on VECTOR_COSINE_SIMILARITY, so this is the fallback path.
     assert r.json()["retrieval_mode"] == "keyword"
     assert "cortex" in caplog.text.lower()
+
+
+# --- Task 2 (Phase 3B): EMF telemetry on the chat path.
+
+
+def test_chat_emits_metrics(monkeypatch, capsys):
+    """Four metrics per answered question, dimensioned by role and outcome. Without
+    the outcome dimension a rise in errors is invisible in the aggregate."""
+    import json
+
+    c = _client(monkeypatch)
+    tok = _token(c)["token"]
+    r = c.post("/api/chat", json={"question": "how many machines?"},
+               headers={"authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+    emitted = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+               if line.startswith("{") and "_aws" in line]
+    names = {m["_aws"]["CloudWatchMetrics"][0]["Metrics"][0]["Name"] for m in emitted}
+    assert {"Answered", "LatencyMs", "RetrievalMs", "TokensTotal"} <= names
+    assert all(m.get("role") == "analyst" for m in emitted)

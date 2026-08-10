@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from copilot import auth
+from copilot import auth, metrics
 from copilot.agent.pipeline import ChatResponse, answer_question
 from copilot.agent.prompts import PROMPT_VERSION
 from copilot.request_log import log_request
@@ -294,10 +294,18 @@ def chat(req: ChatRequest, identity: tuple[str, str] = Depends(_require_identity
     start = time.monotonic()
     resp = answer_question(req.question, state.provider, sf,
                            conversation_id=scoped_conversation_id, executor=executor)
+    e2e_ms = int((time.monotonic() - start) * 1000)
     log_request(state.sf_writer, request_id=resp.request_id or "",
                 conversation_id=_logged_conversation_id(email, req.conversation_id),
                 user_role=role, question=req.question, response=resp,
-                e2e_ms=int((time.monotonic() - start) * 1000))
+                e2e_ms=e2e_ms)
+    outcome = resp.error_type or "ok"
+    metrics.emit("Answered", 1, "Count", role=role, outcome=outcome, intent=resp.intent)
+    metrics.emit("LatencyMs", e2e_ms, "Milliseconds", role=role, outcome=outcome)
+    metrics.emit("RetrievalMs", resp.retrieval_ms or 0, "Milliseconds",
+                 role=role, mode=resp.retrieval_mode)
+    metrics.emit("TokensTotal", (resp.tokens_in or 0) + (resp.tokens_out or 0),
+                 "Count", role=role)
     return resp
 
 
