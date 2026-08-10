@@ -22,6 +22,15 @@ written to `COPILOT.REQUEST_LOG`, and every answer can be thumbs-up/down'd
 with a comment into `COPILOT.FEEDBACK`. Still ahead: an eval harness, an
 admin console, and AWS deployment (Terraform, ECS, CloudWatch).
 
+## Documentation
+
+- [docs/FLOW.md](docs/FLOW.md) — how the code executes, from entrypoint to Snowflake and
+  back, with file and line references. Start here to find your way around.
+- [docs/DECISIONS.md](docs/DECISIONS.md) — every meaningful choice and why, including the
+  alternatives rejected and the bugs that forced a rethink.
+- [docs/reviews/](docs/reviews/) — the Phase 2 security review findings and the fix record.
+- [docs/PENDING-ACTIONS.md](docs/PENDING-ACTIONS.md) — anything waiting on a human.
+
 ## Quickstart
 1. `cp .env.example .env` and fill in credentials
 2. `make install && make check-env`
