@@ -44,11 +44,16 @@ def decode_token(token: str) -> dict:
 
 
 def require_role(request: Request) -> str:
-    """FastAPI dependency: returns 'analyst' | 'admin' or raises 401."""
+    """FastAPI dependency: returns 'analyst' | 'admin' or raises 401.
+
+    KeyError is caught alongside AuthError: a validly-signed token that simply omits
+    the "role" claim is an invalid token, not a server fault, and used to escape as an
+    uncaught KeyError -> 500. (Its sibling main._require_identity already did this.)
+    """
     header = request.headers.get("authorization", "")
     if not header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     try:
         return decode_token(header.removeprefix("Bearer "))["role"]
-    except AuthError as e:
+    except (AuthError, KeyError) as e:
         raise HTTPException(status_code=401, detail=f"invalid token: {e}") from e

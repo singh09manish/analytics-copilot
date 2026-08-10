@@ -8,6 +8,9 @@ export interface ChatResponse {
   retrieval_ms: number;
   intent: string | null;
   request_id: string | null;
+  // "vector" (Cortex) or "keyword" (fallback ranking). Optional: older backends
+  // omit it, and the UI does not render it today.
+  retrieval_mode?: string | null;
 }
 
 export interface LoginResponse {

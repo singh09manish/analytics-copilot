@@ -40,6 +40,7 @@ class AgentState(TypedDict, total=False):
     tokens_in: int
     tokens_out: int
     retrieval_ms: int
+    retrieval_mode: str  # "vector" | "keyword" -- see retrieval.RetrievedContext.mode
 
 
 def _rows_as_csv(columns: list, rows: list) -> str:
@@ -76,7 +77,8 @@ def build_graph(provider, sf, executor=None, use_memory: bool = True):
 
     def do_retrieve(state: AgentState) -> dict:
         ctx = retrieve(state["question"], sf)
-        return {"context": ctx.model_dump(), "retrieval_ms": ctx.retrieval_ms}
+        return {"context": ctx.model_dump(), "retrieval_ms": ctx.retrieval_ms,
+                "retrieval_mode": ctx.mode}
 
     def glossary_answer(state: AgentState) -> dict:
         ctx = RetrievedContext.model_validate(state["context"])

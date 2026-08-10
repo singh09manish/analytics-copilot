@@ -28,11 +28,16 @@ class FakeSnowflake:
 
     def __init__(self):
         self.queries = []
+        # (sql, params) pairs. `queries` alone hid a whole class of bug: it dropped
+        # the params, so a paramstyle/param-count mismatch in an INSERT was
+        # invisible to every hermetic test (final review, finding I7).
+        self.calls = []
         self.fail = False
         self.result = (["MODEL"], [("TrueBeam",), ("Halcyon",)])
 
     def run_query(self, sql: str, params: tuple = ()):
         self.queries.append(sql)
+        self.calls.append((sql, params))
         if "VECTOR_COSINE_SIMILARITY" in sql:
             raise RuntimeError("no cortex in tests")
         if "SCHEMA_CARDS" in sql:

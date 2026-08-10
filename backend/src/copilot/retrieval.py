@@ -1,8 +1,11 @@
+import logging
 import time
 
 from pydantic import BaseModel
 
 from copilot.snowflake_client import SnowflakeClient
+
+logger = logging.getLogger(__name__)
 
 EMBED = "SNOWFLAKE.CORTEX.EMBED_TEXT_768('snowflake-arctic-embed-m-v1.5', %s)"
 
@@ -11,6 +14,10 @@ class RetrievedContext(BaseModel):
     schema_cards: list[str]
     glossary: list[str]
     retrieval_ms: int = 0
+    # "vector" (Cortex) or "keyword" (fallback). Carried through the graph into
+    # ChatResponse.retrieval_mode so a silent degradation to keyword ranking is
+    # visible, rather than the app quietly contradicting the README's "Cortex vector
+    # retrieval" claim with nothing in any log or response to show for it.
     mode: str = "vector"
 
 
@@ -48,7 +55,11 @@ def retrieve(question: str, sf: SnowflakeClient, k_cards: int = 3,
             schema_cards=[f"{r[0]}: {r[1]}" for r in card_rows],
             glossary=[r[0] for r in term_rows],
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
+        logger.warning(
+            "Cortex vector retrieval failed; falling back to keyword ranking for "
+            "this request. Results will be less relevant until Cortex is reachable.",
+            exc_info=True)
         _, cards = sf.run_query(
             "SELECT table_name, card FROM MEDTECH_ANALYTICS.COPILOT.SCHEMA_CARDS")
         _, terms = sf.run_query(

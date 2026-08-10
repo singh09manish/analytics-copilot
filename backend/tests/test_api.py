@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import bcrypt
 import jwt as pyjwt
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from copilot import auth
@@ -13,13 +14,17 @@ from copilot.api import main as main_module
 from copilot.api.main import app
 from tests.conftest import FakeProvider, FakeSnowflake
 
+# >= 32 bytes so these tests exercise the same HS256 key strength startup now
+# demands (finding M6), and so PyJWT stops emitting InsecureKeyLengthWarning.
+_TEST_SECRET = "test-secret-that-is-long-enough-for-hs256"
+
 
 def _client(monkeypatch):
     h = bcrypt.hashpw(b"pw123", bcrypt.gensalt()).decode()
     s = auth.get_settings()
     monkeypatch.setattr(s, "demo_analyst_password_hash", h)
     monkeypatch.setattr(s, "demo_admin_password_hash", h)
-    monkeypatch.setattr(s, "jwt_secret", "test-secret")
+    monkeypatch.setattr(s, "jwt_secret", _TEST_SECRET)
     app.state.provider = FakeProvider()
     app.state.sf_ro = FakeSnowflake()
     app.state.sf_admin = FakeSnowflake()
@@ -419,7 +424,7 @@ def test_chat_rejects_conversation_id_containing_colon(monkeypatch):
 
 def test_app_shutdown_closes_mcp_executor(monkeypatch):
     s = auth.get_settings()
-    monkeypatch.setattr(s, "jwt_secret", "test-secret")
+    monkeypatch.setattr(s, "jwt_secret", _TEST_SECRET)
 
     closed = {"called": False}
 
@@ -490,3 +495,147 @@ def test_chat_empty_question_400(monkeypatch):
     r = c.post("/chat", json={"question": "  "},
                headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 400
+
+
+# --- Final review, Important finding I3: a validly-signed token missing the "role"
+# claim reached auth.require_role's bare `except AuthError`, so the KeyError escaped
+# as a 500 on /feedback (while /chat, whose dependency already caught KeyError,
+# correctly returned 401).
+
+
+def test_feedback_token_without_role_claim_is_401_not_500(monkeypatch):
+    c = _client(monkeypatch)
+    s = auth.get_settings()
+    bad = pyjwt.encode({"sub": "analyst@demo"}, s.jwt_secret, algorithm="HS256")  # no "role"
+    r = c.post("/feedback",
+               json={"request_id": "rid", "conversation_id": "c1", "rating": "up",
+                     "comment": None},
+               headers={"authorization": f"Bearer {bad}"})
+    assert r.status_code == 401
+
+
+def test_require_role_dependency_maps_missing_claim_to_401(monkeypatch):
+    """The auth helper itself, independent of which endpoint uses it."""
+    s = auth.get_settings()
+    monkeypatch.setattr(s, "jwt_secret", _TEST_SECRET)
+    token = pyjwt.encode({"sub": "analyst@demo"}, _TEST_SECRET, algorithm="HS256")
+
+    class FakeRequest:
+        def __init__(self):
+            self.headers = {"authorization": f"Bearer {token}"}
+
+    with pytest.raises(HTTPException) as exc:
+        auth.require_role(FakeRequest())
+    assert exc.value.status_code == 401
+
+
+# --- Final review, Important finding I6: REQUEST_LOG and FEEDBACK logged the RAW
+# client conversation_id and only a user_role, so two users who both sent
+# conversation_id "1" got correctly isolated agent memory and conflated audit rows
+# with no way to tell them apart. The ops-table DDL is fixed (no user column), so the
+# logged conversation_id carries the identity scope -- the same scope the checkpointer
+# thread key already used.
+
+
+def _logged_params(sql_fragment):
+    return [params for sql, params in app.state.sf_writer.calls if sql_fragment in sql]
+
+
+def test_chat_logs_the_identity_scoped_conversation_id(monkeypatch):
+    c = _client(monkeypatch)
+    tok = _token(c)["token"]
+    c.post("/chat", json={"question": "Which models?", "conversation_id": "1"},
+           headers={"authorization": f"Bearer {tok}"})
+    params = _logged_params("COPILOT.REQUEST_LOG")
+    assert params, "no REQUEST_LOG insert recorded"
+    assert params[-1][1] == "analyst@demo:1"
+
+
+def test_two_users_sharing_a_conversation_id_are_distinguishable_in_the_log(monkeypatch):
+    c = _client(monkeypatch)
+    for email in ("analyst@demo", "admin@demo"):
+        tok = _token(c, email)["token"]
+        c.post("/chat", json={"question": "Which models?", "conversation_id": "1"},
+               headers={"authorization": f"Bearer {tok}"})
+    logged = [p[1] for p in _logged_params("COPILOT.REQUEST_LOG")]
+    assert logged[-2:] == ["analyst@demo:1", "admin@demo:1"]
+
+
+def test_chat_without_conversation_id_still_names_the_actor(monkeypatch):
+    c = _client(monkeypatch)
+    tok = _token(c)["token"]
+    c.post("/chat", json={"question": "Which models?"},
+           headers={"authorization": f"Bearer {tok}"})
+    assert _logged_params("COPILOT.REQUEST_LOG")[-1][1] == "analyst@demo:"
+
+
+def test_feedback_logs_the_identity_scoped_conversation_id(monkeypatch):
+    c = _client(monkeypatch)
+    tok = _token(c)["token"]
+    c.post("/feedback",
+           json={"request_id": "rid", "conversation_id": "1", "rating": "down",
+                 "comment": "wrong number"},
+           headers={"authorization": f"Bearer {tok}"})
+    assert _logged_params("COPILOT.FEEDBACK")[-1][0] == "analyst@demo:1"
+
+
+# --- Final review, Important finding I7 (FEEDBACK half): the hermetic suite must be
+# able to catch a column/placeholder/param-count drift in this INSERT too.
+
+
+def test_feedback_insert_column_placeholder_and_param_counts_agree(monkeypatch):
+    c = _client(monkeypatch)
+    tok = _token(c)["token"]
+    c.post("/feedback",
+           json={"request_id": "rid", "conversation_id": "c1", "rating": "up",
+                 "comment": "nice"},
+           headers={"authorization": f"Bearer {tok}"})
+
+    sql, params = [call for call in app.state.sf_writer.calls
+                   if "COPILOT.FEEDBACK" in call[0]][-1]
+    columns = sql[sql.index("(") + 1:sql.index(")")].split(",")
+    # FEEDBACK has 7 columns; feedback_id and created_at default, so 5 are named.
+    assert len(columns) == len(main_module.FEEDBACK_COLUMNS) == 5
+    assert sql.count("%s") == 5
+    assert len(params) == 5
+
+
+# --- Final review, Minor finding M6: startup rejected only the exact published
+# default, so JWT_SECRET=x sailed through -- no harder to guess than the default it
+# replaced. HS256 needs >= 32 bytes (RFC 7518 3.2).
+
+
+def test_app_refuses_to_start_with_a_short_jwt_secret(monkeypatch):
+    s = auth.get_settings()
+    monkeypatch.setattr(s, "jwt_secret", "x" * 31)
+    with pytest.raises(RuntimeError, match="JWT_SECRET"), TestClient(app):
+        pass
+
+
+def test_app_starts_with_a_long_enough_jwt_secret(monkeypatch):
+    s = auth.get_settings()
+    monkeypatch.setattr(s, "jwt_secret", "y" * 32)
+    app.state.provider = FakeProvider()
+    app.state.sf_ro = FakeSnowflake()
+    app.state.sf_admin = FakeSnowflake()
+    app.state.sf_writer = FakeSnowflake()
+    app.state.executor = None
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+    _reset_deps_state()
+
+
+# --- Final review, Minor finding M1: a silent Cortex->keyword downgrade made the
+# README's "Cortex vector retrieval" claim unfalsifiable. The mode now reaches the
+# response (additive optional field) and the fallback is logged.
+
+
+def test_chat_surfaces_the_retrieval_mode(monkeypatch, caplog):
+    c = _client(monkeypatch)
+    tok = _token(c)["token"]
+    with caplog.at_level(logging.WARNING):
+        r = c.post("/chat", json={"question": "Which models?"},
+                   headers={"authorization": f"Bearer {tok}"})
+    # FakeSnowflake raises on VECTOR_COSINE_SIMILARITY, so this is the fallback path.
+    assert r.json()["retrieval_mode"] == "keyword"
+    assert "cortex" in caplog.text.lower()

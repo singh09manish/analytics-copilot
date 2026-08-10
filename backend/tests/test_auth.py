@@ -15,7 +15,9 @@ def demo_hashes(monkeypatch):
     s = auth.get_settings()
     monkeypatch.setattr(s, "demo_analyst_password_hash", h)
     monkeypatch.setattr(s, "demo_admin_password_hash", h)
-    monkeypatch.setattr(s, "jwt_secret", "test-secret")
+    # >= 32 bytes: matches the HS256 key strength startup now demands (M6) and
+    # keeps PyJWT from emitting InsecureKeyLengthWarning across the suite.
+    monkeypatch.setattr(s, "jwt_secret", "test-secret-that-is-long-enough-for-hs256")
 
 
 def test_authenticate_roles():
@@ -35,7 +37,8 @@ def test_decode_rejects_garbage_and_wrong_secret():
     with pytest.raises(auth.AuthError):
         auth.decode_token("not.a.token")
     import jwt as pyjwt
-    forged = pyjwt.encode({"role": "admin", "sub": "x"}, "other-secret", algorithm="HS256")
+    forged = pyjwt.encode({"role": "admin", "sub": "x"},
+                          "a-different-secret-of-sufficient-length!!", algorithm="HS256")
     with pytest.raises(auth.AuthError):
         auth.decode_token(forged)
 
@@ -52,6 +55,22 @@ def test_require_role_dependency():
         with pytest.raises(HTTPException) as e:
             auth.require_role(FakeRequest(bad))
         assert e.value.status_code == 401
+
+
+def test_require_role_rejects_a_validly_signed_token_with_no_role_claim():
+    """Final review, finding I3: this used to escape as an uncaught KeyError -> 500,
+    because require_role caught only AuthError while its sibling in api/main.py
+    already caught KeyError too."""
+    roleless = pyjwt.encode({"sub": "analyst@demo"}, auth.get_settings().jwt_secret,
+                            algorithm="HS256")
+
+    class FakeRequest:
+        def __init__(self):
+            self.headers = {"authorization": f"Bearer {roleless}"}
+
+    with pytest.raises(HTTPException) as e:
+        auth.require_role(FakeRequest())
+    assert e.value.status_code == 401
 
 
 def test_decode_rejects_expired_token():

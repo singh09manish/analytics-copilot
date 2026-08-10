@@ -20,13 +20,19 @@ logger = logging.getLogger(__name__)
 # the repo, so anyone with the repo can forge a {"role": "admin"} token and get
 # the unmasked Snowflake session -- this JWT is the whole authorization boundary.
 _DEFAULT_JWT_SECRET = "dev-secret-change-me"
+# HS256 keys shorter than the hash output are weak (RFC 7518 3.2, and PyJWT warns
+# about it). Rejecting only the published literal let JWT_SECRET=x through, which is
+# no harder to guess than the default it was meant to replace. gen_demo_users.py
+# emits a 58-char hex secret, so this never fires on a correctly-provisioned .env.
+_MIN_JWT_SECRET_BYTES = 32
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from copilot.config import get_settings
 
-    if get_settings().jwt_secret == _DEFAULT_JWT_SECRET:
+    secret = get_settings().jwt_secret
+    if secret == _DEFAULT_JWT_SECRET:
         raise RuntimeError(
             "Refusing to start: JWT_SECRET is still the published default "
             f"({_DEFAULT_JWT_SECRET!r}). This token is the authorization boundary "
@@ -34,6 +40,12 @@ async def lifespan(app: FastAPI):
             "`cd backend && uv run python ../scripts/gen_demo_users.py` and set "
             "JWT_SECRET plus DEMO_ANALYST_PASSWORD_HASH/DEMO_ADMIN_PASSWORD_HASH "
             "in .env before starting this app.")
+    if len(secret.encode()) < _MIN_JWT_SECRET_BYTES:
+        raise RuntimeError(
+            f"Refusing to start: JWT_SECRET is only {len(secret.encode())} bytes; "
+            f"HS256 needs at least {_MIN_JWT_SECRET_BYTES}. This token is the "
+            "authorization boundary for role-scoped Snowflake access -- generate one "
+            "with `cd backend && uv run python ../scripts/gen_demo_users.py`.")
     yield
     executor = getattr(app.state, "executor", None)
     if executor is not None:
@@ -155,8 +167,37 @@ def _live_executor(state):
     return state.executor
 
 
-def _require_role(request: Request) -> str:
-    return auth.require_role(request)
+# Ops-table column lists are FIXED by warehouse/bootstrap.sql. Kept next to the
+# INSERT (as in request_log.py) so a hermetic test can assert
+# len(COLUMNS) == sql.count("%s") == len(params).
+FEEDBACK_COLUMNS = ("conversation_id", "request_id", "rating", "comment", "prompt_version")
+FEEDBACK_INSERT_SQL = (
+    "INSERT INTO MEDTECH_ANALYTICS.COPILOT.FEEDBACK "
+    f"({', '.join(FEEDBACK_COLUMNS)}) "
+    f"VALUES ({', '.join(['%s'] * len(FEEDBACK_COLUMNS))})")
+
+
+def _scoped_conversation_id(email: str, conversation_id: str | None) -> str | None:
+    """Checkpointer thread key: the client's conversation_id namespaced by identity.
+
+    The LangGraph checkpointer is process-global and keyed by thread_id, so a
+    client-supplied conversation_id must never be the key directly -- one user could
+    supply another's and read their history. None stays None: an anonymous turn gets
+    no memory at all rather than a shared one.
+    """
+    return f"{email}:{conversation_id}" if conversation_id is not None else None
+
+
+def _logged_conversation_id(email: str, conversation_id: str | None) -> str:
+    """Audit key for REQUEST_LOG/FEEDBACK: always identity-scoped, never None.
+
+    The ops tables have no user column (their DDL is fixed) and REQUEST_LOG records
+    only user_role, so logging the raw client value made rows unattributable: two
+    users who both send conversation_id "1" got correctly isolated agent memory and
+    conflated audit rows. Scoping the logged value the same way the thread key is
+    scoped names the actor, and keeps the two views of a conversation consistent.
+    """
+    return f"{email}:{conversation_id if conversation_id is not None else ''}"
 
 
 def _require_identity(request: Request) -> tuple[str, str]:
@@ -232,29 +273,29 @@ def chat(req: ChatRequest, identity: tuple[str, str] = Depends(_require_identity
     # one user could supply another user's conversation_id and read their history.
     # Namespacing by the authenticated email keeps each user's memory isolated even
     # when two clients reuse the same conversation_id.
-    scoped_conversation_id = f"{email}:{req.conversation_id}" if req.conversation_id is not None else None
+    scoped_conversation_id = _scoped_conversation_id(email, req.conversation_id)
     start = time.monotonic()
     resp = answer_question(req.question, state.provider, sf,
                            conversation_id=scoped_conversation_id, executor=executor)
     log_request(state.sf_writer, request_id=resp.request_id or "",
-                conversation_id=req.conversation_id, user_role=role,
-                question=req.question, response=resp,
+                conversation_id=_logged_conversation_id(email, req.conversation_id),
+                user_role=role, question=req.question, response=resp,
                 e2e_ms=int((time.monotonic() - start) * 1000))
     return resp
 
 
 @app.post("/feedback")
-def feedback(req: FeedbackRequest, role: str = Depends(_require_role)) -> dict:
+def feedback(req: FeedbackRequest,
+             identity: tuple[str, str] = Depends(_require_identity)) -> dict:
     if req.rating not in ("up", "down"):
         raise HTTPException(status_code=400, detail="rating must be up|down")
+    _role, email = identity
     state = _deps()
     try:
         state.sf_writer.run_query(
-            "INSERT INTO MEDTECH_ANALYTICS.COPILOT.FEEDBACK "
-            "(conversation_id, request_id, rating, comment, prompt_version) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (req.conversation_id, req.request_id, req.rating,
-             (req.comment or "")[:2000], PROMPT_VERSION))
+            FEEDBACK_INSERT_SQL,
+            (_logged_conversation_id(email, req.conversation_id), req.request_id,
+             req.rating, (req.comment or "")[:2000], PROMPT_VERSION))
     except Exception as e:
         raise HTTPException(status_code=503, detail="feedback store unavailable") from e
     return {"status": "recorded"}
