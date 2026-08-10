@@ -105,9 +105,24 @@ resource "aws_iam_role" "github_deploy" {
         # deploy job changes the subject claim to
         # repo:${var.github_repo}:environment:<name> and would break this assume --
         # update the condition to match if that's ever introduced.
+        #
+        # Two accepted subjects, not one. GitHub now issues an *immutable* subject
+        # claim that embeds numeric owner and repo ids
+        # (repo:owner@1234/repo@5678:ref:...), so a rename cannot silently transfer
+        # trust to whoever claims the old name. Every OIDC guide written before that
+        # feature -- and the first version of this policy -- matches only the classic
+        # form, which fails with a bare "Not authorized to perform
+        # sts:AssumeRoleWithWebIdentity" that names neither claim. Check which form a
+        # repo issues with:
+        #   gh api repos/<owner>/<repo>/actions/oidc/customization/sub
+        # A list under StringEquals is OR, and both entries are exact -- no wildcard,
+        # so this stays scoped to this one repo on main.
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:${var.github_repo}:ref:refs/heads/main",
+            "repo:${var.github_repo_immutable}:ref:refs/heads/main",
+          ]
         }
       }
     }]

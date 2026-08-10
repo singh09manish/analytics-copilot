@@ -1,3 +1,6 @@
 # Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
 github_repo = "singh09manish/analytics-copilot"
 region      = "us-east-1"
+
+# Read with: gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix
+github_repo_immutable = "OWNER@000/analytics-copilot@000"

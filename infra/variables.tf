@@ -28,6 +28,24 @@ variable "github_repo" {
   }
 }
 
+variable "github_repo_immutable" {
+  description = <<-EOT
+    The same repo in GitHub's immutable-subject form, with numeric owner and repo
+    ids: owner@<owner_id>/name@<repo_id>. GitHub issues this instead of the classic
+    owner/name in the OIDC subject claim so that renaming a repo cannot hand trust
+    to whoever registers the old name. Read the exact value with:
+      gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix
+    Both forms are accepted by the trust policy, so this is safe to leave at the
+    default on an account that still issues the classic form.
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]+(@[0-9]+)?/[A-Za-z0-9._-]+(@[0-9]+)?$", var.github_repo_immutable))
+    error_message = "github_repo_immutable must look like \"owner@123/name@456\"."
+  }
+}
+
 variable "app_model" {
   type    = string
   default = "claude-sonnet-5"
