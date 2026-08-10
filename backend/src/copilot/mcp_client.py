@@ -153,9 +153,13 @@ class McpExecutor:
     def _run(self, coro):
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=60)
 
-    def run_query(self, sql: str) -> tuple[list, list]:
+    def run_query(self, sql: str, role: str = "COPILOT_APP_RO") -> tuple[list, list]:
+        """`role` is forwarded as a tool argument so the server executes under the
+        caller's actual Snowflake role (masking policies CASE on CURRENT_ROLE()) --
+        see mcp_server/server.py's run_query/_sf() for the server-side allowlist."""
+
         async def call():
-            return await self._session.call_tool("run_query", {"sql": sql})
+            return await self._session.call_tool("run_query", {"sql": sql, "role": role})
 
         return _parse_tool_result(self._run(call()))
 

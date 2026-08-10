@@ -100,3 +100,55 @@ def test_run_query_runs_under_fake_hook(fake_snowflake_env):
 def test_search_glossary_runs_under_fake_hook(fake_snowflake_env):
     out = mcp_srv.search_glossary("what is MTTR?", k=3)
     assert out == ["MTTR: mean time to repair"]
+
+
+# --- Task 7 follow-up review, Finding 1: query EXECUTION must be role-aware so
+# Snowflake's CURRENT_ROLE()-based masking applies for admins too, not just RO.
+
+
+def test_sf_caches_one_client_per_allowlisted_role(fake_snowflake_env):
+    mcp_srv._sf_clients.clear()
+    ro = mcp_srv._sf("COPILOT_APP_RO")
+    admin = mcp_srv._sf("COPILOT_ADMIN")
+    assert ro.role == "COPILOT_APP_RO"
+    assert admin.role == "COPILOT_ADMIN"
+    assert ro is not admin
+    assert mcp_srv._sf("COPILOT_APP_RO") is ro  # cached, not rebuilt
+    assert mcp_srv._sf("COPILOT_ADMIN") is admin
+
+
+def test_sf_rejects_role_outside_allowlist(fake_snowflake_env):
+    mcp_srv._sf_clients.clear()
+    with pytest.raises(ValueError, match="role must be one of"):
+        mcp_srv._sf("PUBLIC")
+    assert mcp_srv._sf_clients == {}  # never cached an unvalidated role
+
+
+def test_sf_never_passes_arbitrary_role_string_through(fake_snowflake_env, monkeypatch):
+    """The allowlist check must run BEFORE anything reaches a real SnowflakeClient
+    constructor -- assert this by making a real-mode SnowflakeClient() call fail
+    loudly if it's ever invoked with the malicious string."""
+    monkeypatch.delenv("COPILOT_FAKE_SNOWFLAKE", raising=False)
+    mcp_srv._sf_clients.clear()
+    with pytest.raises(ValueError, match="role must be one of"):
+        mcp_srv._sf("'; DROP ROLE ACCOUNTADMIN; --")
+    assert mcp_srv._sf_clients == {}
+
+
+def test_run_query_tool_forwards_role_to_sf(fake_snowflake_env):
+    mcp_srv._sf_clients.clear()
+    mcp_srv.run_query("SELECT model FROM GOLD.DIM_MACHINE", role="COPILOT_ADMIN")
+    assert "COPILOT_ADMIN" in mcp_srv._sf_clients
+    assert "COPILOT_APP_RO" not in mcp_srv._sf_clients
+
+
+def test_run_query_tool_defaults_to_copilot_app_ro(fake_snowflake_env):
+    mcp_srv._sf_clients.clear()
+    mcp_srv.run_query("SELECT model FROM GOLD.DIM_MACHINE")
+    assert "COPILOT_APP_RO" in mcp_srv._sf_clients
+
+
+def test_run_query_tool_rejects_out_of_allowlist_role(fake_snowflake_env):
+    mcp_srv._sf_clients.clear()
+    with pytest.raises(ValueError, match="role must be one of"):
+        mcp_srv.run_query("SELECT model FROM GOLD.DIM_MACHINE", role="SOME_OTHER_ROLE")

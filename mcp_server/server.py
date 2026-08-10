@@ -23,7 +23,15 @@ from copilot.sql_guard import SqlGuardError, validate
 
 mcp = FastMCP("analytics-copilot-snowflake")
 
-_sf_client = None  # module-level cache: one SnowflakeClient/fake for the process lifetime
+# Roles map exactly, per the plan's global constraint: JWT analyst -> COPILOT_APP_RO
+# (masked), admin -> COPILOT_ADMIN (unmasked). Snowflake's masking policies CASE on
+# CURRENT_ROLE(), so query *execution* must run under the caller's actual role, not
+# always the RO role -- this allowlist is the last line of defense against that
+# (defense in depth: the API is also expected to only ever send one of these two
+# strings, never a client-supplied value).
+_ALLOWED_ROLES = frozenset({"COPILOT_APP_RO", "COPILOT_ADMIN"})
+
+_sf_clients: dict[str, object] = {}  # module-level cache: one SnowflakeClient/fake PER role, for the process lifetime
 
 
 class _FakeSnowflake:
@@ -33,6 +41,11 @@ class _FakeSnowflake:
     all four tools (run_query, list_tables, describe_table, search_glossary) --
     including retrieval's vector-then-keyword-fallback path -- run without error.
     """
+
+    def __init__(self, role: str = "COPILOT_APP_RO"):
+        # Recorded (not used to vary query results) so tests can prove the right
+        # role reached the right cached client without a real Snowflake connection.
+        self.role = role
 
     def run_query(self, sql: str, params: tuple = ()):
         if "VECTOR_COSINE_SIMILARITY" in sql:
@@ -47,22 +60,26 @@ class _FakeSnowflake:
         return (["MODEL"], [("TrueBeam",), ("Halcyon",)])
 
 
-def _sf():
-    """Lazily build, then reuse, one SnowflakeClient (or fake) for this process.
+def _sf(role: str = "COPILOT_APP_RO"):
+    """Lazily build, then reuse, one SnowflakeClient (or fake) per allowlisted role.
 
-    Mirrors backend/src/copilot/api/main.py's app.state.sf_ro caching -- a stdio
-    server is long-lived, so building a fresh client (and Snowflake session) per
-    tool call would leak one session per call.
+    Mirrors backend/src/copilot/api/main.py's app.state.sf_ro/sf_admin caching -- a
+    stdio server is long-lived, so building a fresh client (and Snowflake session)
+    per tool call would leak one session per call. `role` is never passed through
+    to SnowflakeClient unvalidated: anything outside _ALLOWED_ROLES is rejected here
+    rather than reaching Snowflake as an arbitrary role string.
     """
-    global _sf_client
-    if _sf_client is None:
+    if role not in _ALLOWED_ROLES:
+        raise ValueError(
+            f"role must be one of {sorted(_ALLOWED_ROLES)}, got {role!r}")
+    if role not in _sf_clients:
         if os.environ.get("COPILOT_FAKE_SNOWFLAKE") == "1":
-            _sf_client = _FakeSnowflake()
+            _sf_clients[role] = _FakeSnowflake(role)
         else:
             from copilot.snowflake_client import SnowflakeClient
 
-            _sf_client = SnowflakeClient(role="COPILOT_APP_RO")
-    return _sf_client
+            _sf_clients[role] = SnowflakeClient(role=role)
+    return _sf_clients[role]
 
 
 def _deny_side_effects(sql: str) -> None:
@@ -105,9 +122,14 @@ def _describe_table_impl(table_name: str, sf) -> str:
 
 
 @mcp.tool()
-def run_query(sql: str) -> dict:
-    """Execute one read-only SELECT against GOLD/COPILOT. Validated server-side."""
-    return _run_query_impl(sql, _sf())
+def run_query(sql: str, role: str = "COPILOT_APP_RO") -> dict:
+    """Execute one read-only SELECT against GOLD/COPILOT. Validated server-side.
+
+    `role` selects which Snowflake role/session runs the query (COPILOT_APP_RO or
+    COPILOT_ADMIN only -- anything else is rejected) so masking policies that CASE
+    on CURRENT_ROLE() are enforced for the caller's actual authenticated role.
+    """
+    return _run_query_impl(sql, _sf(role))
 
 
 @mcp.tool()
