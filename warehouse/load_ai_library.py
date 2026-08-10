@@ -17,14 +17,18 @@ def main() -> None:
     # warehouse/bootstrap.sql -- the schema-wide COPILOT grant was removed because it
     # also exposed REQUEST_LOG/FEEDBACK). Without COPY GRANTS, re-running this loader
     # would drop those grants and break retrieval for every analyst.
+    # Position matters: in the column-definition form of CREATE TABLE, COPY GRANTS goes
+    # AFTER the closing paren. The pre-column position is only legal in the CTAS
+    # variant (CREATE TABLE <name> COPY GRANTS AS SELECT ...), which this is not.
     sf.execute_many([
         (
-            "CREATE OR REPLACE TABLE MEDTECH_ANALYTICS.COPILOT.GLOSSARY COPY GRANTS ("
-            "term VARCHAR, definition VARCHAR, related_tables VARCHAR, embedding VECTOR(FLOAT, 768))"
+            "CREATE OR REPLACE TABLE MEDTECH_ANALYTICS.COPILOT.GLOSSARY ("
+            "term VARCHAR, definition VARCHAR, related_tables VARCHAR, "
+            "embedding VECTOR(FLOAT, 768)) COPY GRANTS"
         ),
         (
-            "CREATE OR REPLACE TABLE MEDTECH_ANALYTICS.COPILOT.SCHEMA_CARDS COPY GRANTS ("
-            "table_name VARCHAR, card VARCHAR, embedding VECTOR(FLOAT, 768))"
+            "CREATE OR REPLACE TABLE MEDTECH_ANALYTICS.COPILOT.SCHEMA_CARDS ("
+            "table_name VARCHAR, card VARCHAR, embedding VECTOR(FLOAT, 768)) COPY GRANTS"
         ),
     ])
     glossary = yaml.safe_load((LIB / "glossary.yaml").read_text())
