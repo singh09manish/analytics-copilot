@@ -64,9 +64,15 @@ def test_mcp_rbac_masking_live():
         assert ro_rows and admin_rows
         ro_emails = [row[1] for row in ro_rows]
         admin_emails = [row[1] for row in admin_rows]
+        # Every RO-visible email is the mask token -- including the centers whose
+        # email is NULL, so the mask does not leak which records are missing data.
         assert all(e == "***MASKED***" for e in ro_emails)
-        assert all(e != "***MASKED***" and "@" in e for e in admin_emails)
-        assert admin_emails != ro_emails
+        # The admin session never sees the mask token. Some centers genuinely have
+        # no email on file (7 of 60 in the seed), so NULL is expected here; what
+        # matters is that no value was masked and at least one real address is
+        # visible -- i.e. the CASE resolved to the unmasked branch.
+        assert all(e != "***MASKED***" for e in admin_emails)
+        assert any(e is not None and "@" in e for e in admin_emails)
     finally:
         ex.close()
 

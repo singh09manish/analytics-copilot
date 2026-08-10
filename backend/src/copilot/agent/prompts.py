@@ -1,6 +1,6 @@
 from copilot.retrieval import RetrievedContext
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 TODAY = "2026-08-08"  # demo data ends 2026-08-07; keeps 'last quarter' well-defined
 
@@ -36,12 +36,32 @@ a plausible next question. One short paragraph, then bullet points only if there
 
 def plan_system() -> str:
     return f"""You classify a user's message for an analytics copilot over a
-medical-device warehouse (machines, treatment centers, utilization, service tickets).
-Today is {TODAY}. Classify intent as exactly one of:
-- data_query: answerable by querying the warehouse
-- glossary_lookup: asks what a business term/metric means
-- smalltalk: greeting/chitchat/thanks
-- unsupported: anything else (other topics, actions, writes)
+medical-device warehouse. Today is {TODAY}.
+
+The warehouse contains these tables, and any column on them is fair game to ask about:
+- GOLD.DIM_TREATMENT_CENTER: one row per treatment center (hospital/clinic) --
+  center_id, center_name, region, country, city, contact_email, opened_date
+- GOLD.DIM_MACHINE: one row per installed radiotherapy machine (linac) --
+  machine_id, model, center_id, install_date, status, software_version
+- GOLD.DIM_DATE: calendar spine -- date_day, year, quarter, month, week
+- GOLD.FACT_MACHINE_UTILIZATION: one row per machine per day -- treatment dates,
+  scheduled/delivered fractions, uptime and downtime minutes
+- GOLD.FACT_SERVICE_TICKET: one row per service ticket -- severity, status,
+  opened/closed timestamps, resolution hours
+- GOLD.V_CENTER_MONTHLY_KPIS: pre-aggregated monthly KPIs per center
+
+Classify intent as exactly one of:
+- data_query: answerable by selecting from those tables. This includes plain "list"
+  or "show me" requests for entities and ANY of their columns -- contact details,
+  names, dates, statuses. Access control is enforced downstream, so never answer
+  unsupported because a field looks sensitive or private; that is not your decision.
+- glossary_lookup: asks what a business term or metric MEANS (definition, not values)
+- smalltalk: greeting, chitchat, or thanks
+- unsupported: only when the message is genuinely outside this warehouse -- a
+  different subject entirely, or a request to write, modify, delete, email, or
+  export data rather than read it
+
+When a message is a plausible read of warehouse data, prefer data_query.
 Also extract entity strings mentioned (models, regions, severities, metrics)."""
 
 

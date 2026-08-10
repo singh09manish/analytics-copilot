@@ -87,6 +87,14 @@ GRANT INSERT ON TABLE MEDTECH_ANALYTICS.COPILOT.FEEDBACK TO ROLE COPILOT_APP_WRI
 GRANT INSERT ON TABLE MEDTECH_ANALYTICS.COPILOT.REQUEST_LOG TO ROLE COPILOT_APP_WRITER;
 GRANT INSERT ON TABLE MEDTECH_ANALYTICS.COPILOT.EVAL_RESULTS TO ROLE COPILOT_APP_WRITER;
 
+-- Admin reads the ops tables directly (Admin Console, eval harness). This grant has to
+-- be explicit: COPILOT_ADMIN inherits COPILOT_APP_RO, and it used to reach these tables
+-- only through that inheritance -- so revoking the analyst's schema-wide SELECT above
+-- silently took admin's monitoring access with it. A monitoring role should not depend
+-- on what the least-privileged role happens to be allowed to read.
+GRANT SELECT ON ALL TABLES IN SCHEMA MEDTECH_ANALYTICS.COPILOT TO ROLE COPILOT_ADMIN;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA MEDTECH_ANALYTICS.COPILOT TO ROLE COPILOT_ADMIN;
+
 -- Service user: key-pair auth only (no password), TYPE=SERVICE avoids MFA policy
 CREATE USER IF NOT EXISTS COPILOT_SVC
   TYPE = SERVICE
