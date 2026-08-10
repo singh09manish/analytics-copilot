@@ -54,6 +54,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Analytics Copilot", lifespan=lifespan)
 
+# CloudFront routes /api/* to the ALB with the path unchanged, so every route is
+# mounted under /api. /healthz stays at the root for the ALB's own health check,
+# which talks to the task directly and never goes through CloudFront.
+
 
 # CORS origins are resolved once at import time (not request time) because
 # get_settings() is @lru_cache'd. This is correct for containerized deployment,
@@ -238,7 +242,7 @@ def healthz() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/auth/login")
+@app.post("/api/auth/login")
 def login(req: LoginRequest) -> dict:
     role = auth.authenticate(req.email, req.password)
     if role is None:
@@ -252,7 +256,7 @@ def login(req: LoginRequest) -> dict:
     return {"token": auth.create_token(role, email), "role": role, "email": email}
 
 
-@app.post("/chat")
+@app.post("/api/chat")
 def chat(req: ChatRequest, identity: tuple[str, str] = Depends(_require_identity)) -> ChatResponse:
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question is empty")
@@ -297,7 +301,7 @@ def chat(req: ChatRequest, identity: tuple[str, str] = Depends(_require_identity
     return resp
 
 
-@app.post("/feedback")
+@app.post("/api/feedback")
 def feedback(req: FeedbackRequest,
              identity: tuple[str, str] = Depends(_require_identity)) -> dict:
     if req.rating not in ("up", "down"):
