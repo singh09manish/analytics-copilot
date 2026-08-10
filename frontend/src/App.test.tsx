@@ -60,7 +60,7 @@ test("login success posts to /auth/login and transitions to the chat UI", async 
 
   expect(fetchMock).toHaveBeenCalledTimes(1);
   const [url, options] = fetchMock.mock.calls[0];
-  expect(String(url)).toContain("/auth/login");
+  expect(String(url)).toContain("/api/auth/login");
   expect(options.method).toBe("POST");
   expect(JSON.parse(options.body)).toEqual({ email: "analyst@demo", password: "secret" });
 });
@@ -94,7 +94,7 @@ test("authenticated requests attach the Authorization bearer header", async () =
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
   const [url, options] = fetchMock.mock.calls[0];
-  expect(String(url)).toContain("/chat");
+  expect(String(url)).toContain("/api/chat");
   expect(options.headers.authorization).toBe(`Bearer ${token}`);
 });
 
@@ -165,7 +165,7 @@ test("thumbs-up feedback posts to /feedback once and shows the recorded state", 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
   const [url, options] = fetchMock.mock.calls[1];
-  expect(String(url)).toContain("/feedback");
+  expect(String(url)).toContain("/api/feedback");
   const body = JSON.parse(options.body);
   expect(body).toMatchObject({ request_id: "r1", rating: "up" });
 

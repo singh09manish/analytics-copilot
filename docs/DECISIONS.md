@@ -469,6 +469,21 @@ provides HTTPS across the whole app without owning a domain, and it collapses th
 a single origin so CORS is moot. The alternatives were an ACM certificate on the ALB
 (requires a domain) or an HTTPS page calling an HTTP API (blocked as mixed content).
 
+### No distribution-level SPA fallback for 403/404
+`custom_error_response` is a *distribution*-level setting in CloudFront — it applies to
+every behaviour, not just the default one. Adding the conventional SPA rule (403/404 →
+200 + `/index.html`) would rewrite `/api/*` 403s and 404s into HTML too, so a mistyped or
+undeployed API path would come back with `res.ok === true` and a `<!doctype html>` body:
+`api.ts` would never throw `ApiError`, and `res.json()` would fail with an opaque
+`SyntaxError` instead of a clean, visible 404. That converts exactly the failure this
+kind of routing change risks — a missed or renamed route — from loud into silent. The
+fallback is also solving a problem this app does not have: the SPA has no client-side
+router (`main.tsx` renders `<App/>` directly), so `default_root_object = "index.html"`
+already serves the one URL that exists, `/`. Left out. If client-side routing is ever
+added, the fallback must be scoped to the default behaviour only — e.g. a CloudFront
+Function on `viewer-request` for that behaviour — never the distribution-level setting,
+or it will mask API errors again.
+
 ### GitHub Actions authenticates via OIDC
 No long-lived AWS keys stored in the repo. The trust policy is scoped to branches in this
 repo, so a fork's pull-request workflow cannot assume the role.

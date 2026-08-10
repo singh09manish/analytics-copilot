@@ -12,8 +12,13 @@ QUESTIONS = [
 
 for q in QUESTIONS:
     body = json.dumps({"question": q}).encode()
+    # NOTE: /api/chat requires a Bearer token since auth landed (this script predates
+    # it and was never updated). Fixing that needs a login call plumbed through with a
+    # real demo password (gen_demo_users.py never writes the plaintext anywhere), so
+    # this script currently gets 401, not a working demo run -- fix the path here, but
+    # treat this file as broken until that plumbing is added.
     req = urllib.request.Request(
-        "http://localhost:8000/chat", body, {"content-type": "application/json"})
+        "http://localhost:8000/api/chat", body, {"content-type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             data = json.load(r)

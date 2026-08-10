@@ -21,6 +21,11 @@ resource "aws_cloudfront_origin_access_control" "web" {
 
 resource "aws_s3_bucket_policy" "web" {
   bucket = aws_s3_bucket.web.id
+  # Both resources depend only on the bucket, so without an explicit ordering
+  # Terraform may apply them in parallel and hit S3's
+  # OperationAborted: A conflicting conditional operation is currently in progress
+  # -- the public-access-block and the bucket policy racing each other.
+  depends_on = [aws_s3_bucket_public_access_block.web]
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -44,7 +49,8 @@ resource "aws_cloudfront_cache_policy" "api" {
   max_ttl     = 0
 
   parameters_in_cache_key_and_forwarded_to_origin {
-    enable_accept_encoding_gzip = true
+    enable_accept_encoding_gzip   = true
+    enable_accept_encoding_brotli = true
     cookies_config { cookie_behavior = "none" }
     headers_config { header_behavior = "none" }
     query_strings_config { query_string_behavior = "none" }
@@ -125,21 +131,18 @@ resource "aws_cloudfront_distribution" "web" {
     origin_request_policy_id = aws_cloudfront_origin_request_policy.api.id
   }
 
-  # A single-page app owns its own routing: unknown paths must return index.html,
-  # not S3's 403.
-  custom_error_response {
-    error_code            = 403
-    response_code         = 200
-    response_page_path    = "/index.html"
-    error_caching_min_ttl = 0
-  }
-
-  custom_error_response {
-    error_code            = 404
-    response_code         = 200
-    response_page_path    = "/index.html"
-    error_caching_min_ttl = 0
-  }
+  # No SPA fallback here on purpose: custom_error_response is a DISTRIBUTION-level
+  # setting, not per-behaviour, so a 403/404 -> index.html rule meant for the S3
+  # default behaviour would apply to /api/* too -- a mistyped or undeployed API path
+  # would come back as HTML with res.ok === true, and api.ts would never throw
+  # ApiError; res.json() would just fail on "<!doctype html>" with an opaque
+  # SyntaxError instead of a clean 404. That converts a missed route from visible into
+  # silent, which is exactly the failure this kind of change risks. It's also solving
+  # a problem this app doesn't have: main.tsx renders <App/> directly with no
+  # client-side router, so default_root_object = "index.html" already serves the one
+  # URL that exists, "/". If client-side routing is ever added, the fallback must be
+  # scoped to the default behaviour only (e.g. a CloudFront Function on
+  # viewer-request for that behaviour), never this distribution-level setting.
 
   restrictions {
     geo_restriction { restriction_type = "none" }
