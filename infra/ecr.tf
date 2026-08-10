@@ -25,9 +25,15 @@ resource "aws_ecr_lifecycle_policy" "app" {
       },
       {
         rulePriority = 2
-        description  = "Keep the 10 most recent tagged images"
-        selection    = { tagStatus = "tagged", tagPrefixList = ["*"], countType = "imageCountMoreThan", countNumber = 10 }
-        action       = { type = "expire" }
+        # ECR's lifecycle policy matches tags in one of two ways: tagPrefixList
+        # does literal prefix matching (a `["*"]` entry looks for tags that
+        # start with the literal character "*", which none of ours ever do,
+        # so this rule silently matched nothing and tagged images accumulated
+        # without bound). tagPatternList is the wildcard-aware field --
+        # a bare "*" pattern matches every tagged image regardless of tag.
+        description = "Keep the 10 most recent tagged images"
+        selection   = { tagStatus = "tagged", tagPatternList = ["*"], countType = "imageCountMoreThan", countNumber = 10 }
+        action      = { type = "expire" }
       },
     ]
   })

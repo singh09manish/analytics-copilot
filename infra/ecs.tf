@@ -133,8 +133,24 @@ resource "aws_ecs_service" "app" {
   }
 
   # Without this, a crash-looping task makes `aws ecs wait services-stable`
-  # hang until its own ~10 minute timeout and fail with no rollback. This
-  # fails fast and reverts to the last working revision instead.
+  # hang until its own ~10 minute timeout with no rollback at all. This fails
+  # fast: ECS aborts the bad deployment attempt and leaves the already-running
+  # old task alone, so the service keeps serving instead of hanging or going
+  # to zero.
+  #
+  # It is NOT a genuine content rollback, though. The pipeline never
+  # registers a new task definition revision (deploy.yml deploys with
+  # --force-new-deployment on this same revision only -- the deploy IAM
+  # policy deliberately grants no RegisterTaskDefinition/PassRole), and the
+  # container image reference is the mutable `:latest` ECR tag, which the
+  # pipeline moves onto the new image before the rollout is even attempted.
+  # So by the time the circuit breaker fires, `:latest` already points at the
+  # broken image regardless of outcome -- "rollback" leaves the still-running
+  # old task on the image it already pulled, but any later replacement of
+  # that task (a host failure, an AZ event, a manual restart) will pull
+  # `:latest` and silently adopt the broken image. Real rollback needs a
+  # human to re-tag `:latest` back onto a known-good `:<sha>` and force a new
+  # deployment. See docs/DECISIONS.md, "AWS deployment" section.
   deployment_circuit_breaker {
     enable   = true
     rollback = true

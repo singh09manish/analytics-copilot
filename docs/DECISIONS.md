@@ -513,6 +513,42 @@ gitignored, which means teardown must happen from the same machine.
 so teardown does not stall on leftover objects. The failure mode this avoids is an account
 quietly accruing charges for resources nobody remembers creating.
 
+### The deploy pipeline verifies the rollout is COMPLETED, not just stable
+**Found in review.** `aws ecs wait services-stable` only polls until
+`length(deployments) == 1 && runningCount == desiredCount`; it never inspects
+`rolloutState`. A circuit-breaker rollback (below) ends at exactly that same state — one
+deployment, back at steady count — because the rejected image never became the running
+task. So a bad image reported the same waiter success as a good one, and the pipeline
+would happily publish the SPA against a backend that never actually changed. The fix:
+capture the PRIMARY deployment id from `update-service`, and after the wait, assert the
+PRIMARY deployment is still that id and its `rolloutState` is `COMPLETED`, failing the job
+otherwise. This also closes an eventual-consistency race where the waiter's first poll can
+observe pre-update state and return success in seconds.
+
+### The circuit breaker aborts bad deployments; it does not roll back content
+`deployment_circuit_breaker { enable = true, rollback = true }` (`infra/ecs.tf`) stops the
+waiter above from hanging for ~10 minutes on a crash-looping task, and it leaves the
+already-running old task serving instead of going to zero. That is genuinely useful, but
+"rollback" is not what it sounds like here. The deploy pipeline never registers a new task
+definition revision — the deploy IAM policy deliberately grants no
+`ecs:RegisterTaskDefinition` or `iam:PassRole` — so it deploys by forcing a new placement
+of the *same* revision, whose container image reference is the mutable `:latest` ECR tag.
+The pipeline moves `:latest` onto the new image before the rollout is even attempted, so
+by the time the circuit breaker fires, `:latest` already points at the broken image
+regardless of outcome. "Rollback" therefore means: the bad deployment attempt is aborted
+and the previously-running task keeps running on the image it already pulled, but
+`:latest` stays poisoned — any later replacement of that task (a host failure, an AZ
+event, a manual restart) will pull `:latest` and silently adopt the broken image.
+
+Genuine rollback would need either a human (or a follow-up pipeline step) to re-tag
+`:latest` back onto a known-good `:<git-sha>` and force a new deployment, or a move to
+per-SHA task definition revisions with real `RegisterTaskDefinition`/`PassRole` grants so
+ECS's own revision-based rollback has something meaningful to revert to. Both are left out
+of Phase 3A: the former is a manual runbook step, not yet automated; the latter widens the
+deploy role's IAM surface for a demo-scale, single-operator system where a bad `:latest`
+is caught by the pipeline's post-invalidation smoke-test step and fixed by hand within
+minutes, not autonomously.
+
 ---
 
 ## 12. Process
