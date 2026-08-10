@@ -1,4 +1,7 @@
+import asyncio
 import json
+import threading
+import time
 
 from copilot.mcp_client import _parse_tool_result
 
@@ -91,14 +94,15 @@ def test_parse_missing_columns_key_raises_mcp_error():
 # real stdio transport is covered by test_mcp_stdio_roundtrip.py.
 
 
-def _run_against_stub_session(stub_session, **run_query_kwargs):
+def _run_against_stub_session(stub_session, _on_executor=None, **run_query_kwargs):
     """Drive McpExecutor.run_query against a stub session without spawning the
     real stdio subprocess: McpExecutor normally builds `_loop`/`_session` via a
     background-thread handshake in __init__, but run_query only needs a running
-    event loop (for run_coroutine_threadsafe) and a `_session.call_tool`."""
-    import asyncio
-    import threading
+    event loop (for run_coroutine_threadsafe) and a `_session.call_tool`.
 
+    `_on_executor` hands the constructed executor back to the caller so tests can
+    inspect its liveness state even when run_query raises.
+    """
     from copilot.mcp_client import McpExecutor
 
     loop = asyncio.new_event_loop()
@@ -107,6 +111,13 @@ def _run_against_stub_session(stub_session, **run_query_kwargs):
     ex = McpExecutor.__new__(McpExecutor)
     ex._loop = loop
     ex._session = stub_session
+    # Liveness bookkeeping run_query consults before submitting to the loop (see
+    # McpExecutor.is_broken); __init__ normally sets these.
+    ex._dead = threading.Event()
+    ex._closed = False
+    ex._broken = False
+    if _on_executor is not None:
+        _on_executor(ex)
     try:
         return ex.run_query("SELECT 1", **run_query_kwargs)
     finally:
@@ -135,3 +146,69 @@ def test_run_query_defaults_to_copilot_app_ro_role():
     stub = _StubSession()
     _run_against_stub_session(stub)
     assert stub.calls == [("run_query", {"sql": "SELECT 1", "role": "COPILOT_APP_RO"})]
+
+
+# --- Final review, Critical finding C2: a transport-level failure (the server
+# subprocess died) must mark the executor broken so the API can replace it, while a
+# tool-level failure (a guard rejection, say) must NOT -- the session is fine, the
+# SQL wasn't.
+
+
+class _TransportDeadSession:
+    """call_tool itself raises, the way the MCP SDK reports a closed connection."""
+
+    async def call_tool(self, name, args):
+        raise RuntimeError("Connection closed")
+
+
+def test_transport_failure_marks_executor_broken():
+    import pytest
+
+    from copilot.mcp_client import McpError
+
+    holder = {}
+
+    def capture(ex):
+        holder["ex"] = ex
+
+    with pytest.raises(McpError, match="transport failed"):
+        _run_against_stub_session(_TransportDeadSession(), _on_executor=capture)
+    assert holder["ex"].is_broken()
+
+
+class _ToolErrorSession:
+    async def call_tool(self, name, args):
+        return ToolResult("rejected by SQL guard: schema COPILOT is not allowed", True)
+
+
+def test_tool_level_error_does_not_mark_executor_broken():
+    import pytest
+
+    from copilot.mcp_client import McpError
+
+    holder = {}
+
+    with pytest.raises(McpError, match="rejected by SQL guard"):
+        _run_against_stub_session(_ToolErrorSession(),
+                                  _on_executor=lambda ex: holder.__setitem__("ex", ex))
+    assert not holder["ex"].is_broken()
+
+
+def test_run_query_on_a_dead_executor_raises_immediately():
+    """No event loop at all: is_broken() short-circuits before anything is submitted,
+    so the caller gets McpError now instead of burning the full call timeout."""
+    import pytest
+
+    from copilot.mcp_client import McpError, McpExecutor
+
+    ex = McpExecutor.__new__(McpExecutor)
+    ex._loop = None
+    ex._session = None
+    ex._dead = threading.Event()
+    ex._dead.set()
+    ex._closed = False
+    ex._broken = False
+    start = time.monotonic()
+    with pytest.raises(McpError, match="not available"):
+        ex.run_query("SELECT 1")
+    assert time.monotonic() - start < 1

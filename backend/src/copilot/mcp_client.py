@@ -1,11 +1,22 @@
 """Sync wrapper over the async MCP stdio client, for use inside the agent graph."""
 import asyncio
+import concurrent.futures
 import json
+import logging
 import sys
 import threading
 import time
 
 from copilot.config import REPO_ROOT
+
+logger = logging.getLogger(__name__)
+
+CALL_TIMEOUT = 60
+# How often a blocked caller re-checks whether the background loop has died. The
+# subprocess can die *after* a call is submitted, in which case the coroutine is
+# abandoned on a stopped loop and its future never resolves -- polling is what turns
+# that into a fast McpError instead of a full CALL_TIMEOUT stall.
+_DEATH_POLL_INTERVAL = 0.05
 
 
 class McpError(RuntimeError):
@@ -81,6 +92,18 @@ class McpExecutor:
         self._start_error = None
         self._main_task = None
         self._closed = False
+        # Set when a tool call fails at the transport level while the background loop
+        # is still parked in `_main`. Killing the server subprocess does not always
+        # unwind stdio_client's task group -- the reader task can end cleanly, leaving
+        # `_main` waiting on `_stop_event` forever while every call_tool fails with
+        # "Connection closed". Without this flag the executor looks alive and the API
+        # would keep it (and keep failing every request) for the process lifetime.
+        self._broken = False
+        # Set the instant the background loop stops for any reason -- clean close, a
+        # cancelled startup, or the server subprocess dying under us. Once set, no
+        # coroutine can ever run on `_loop` again, so callers must fail fast rather
+        # than wait out their timeout on a future nobody will ever resolve.
+        self._dead = threading.Event()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout=ready_timeout):
@@ -97,6 +120,17 @@ class McpExecutor:
             self._loop.run_until_complete(self._main_task)
         except asyncio.CancelledError:
             pass  # expected when _abort_startup()/close() cancels a hung startup
+        except Exception:  # the thread is dying either way; record why
+            logger.warning("MCP background loop exited with an error.", exc_info=True)
+        finally:
+            # Publish "this executor is dead" BEFORE the thread exits. Previously the
+            # thread just ended: the loop was left stopped-but-not-closed, `_closed`
+            # stayed False, and every later run_query burned its full 60s timeout on a
+            # coroutine scheduled onto a loop that would never run it again -- twice
+            # per request thanks to the graph's repair edge.
+            self._session = None
+            self._dead.set()
+            self._ready.set()  # unblock a __init__ still waiting on a session
 
     async def _main(self):
         import os
@@ -121,9 +155,19 @@ class McpExecutor:
                 self._session = session
                 self._ready.set()
                 await self._stop_event.wait()
-        except Exception as exc:  # noqa: BLE001 — surfaced to __init__ via _start_error
-            self._start_error = McpError(f"failed to start MCP session: {exc}")
-            self._ready.set()
+        except Exception as exc:  # startup failures surface to __init__ via _start_error
+            if self._ready.is_set():
+                # Post-startup death (the server subprocess exited under us). __init__
+                # is long gone, so nobody will read _start_error -- log it, or this
+                # failure is completely invisible while every request degrades.
+                logger.warning(
+                    "MCP session ended unexpectedly; this executor is now dead and "
+                    "will report failures immediately: %s", exc, exc_info=True)
+            else:
+                self._start_error = McpError(f"failed to start MCP session: {exc}")
+                self._ready.set()
+        finally:
+            self._session = None
 
     def _abort_startup(self):
         """Best-effort teardown for a construction that never became ready.
@@ -141,17 +185,64 @@ class McpExecutor:
         deadline = time.monotonic() + 2
         while self._main_task is None and self._thread.is_alive() and time.monotonic() < deadline:
             time.sleep(0.01)
-        if self._main_task is not None:
-            self._loop.call_soon_threadsafe(self._main_task.cancel)
-        else:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        try:
+            if self._main_task is not None:
+                self._loop.call_soon_threadsafe(self._main_task.cancel)
+            else:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+        except RuntimeError:
+            pass  # the loop already stopped for good; nothing left to cancel
         self._thread.join(timeout=10)
         if not self._loop.is_closed():
             self._loop.close()
         self._closed = True
+        self._dead.set()
 
-    def _run(self, coro):
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=60)
+    def is_broken(self) -> bool:
+        """True once this executor can never serve another query.
+
+        Covers all three ways it can stop working: the background loop exited
+        (`_dead`), a caller closed it (`_closed`), or the stdio transport under a
+        still-running loop is gone (`_broken`, set by run_query). Callers use it to
+        swap in a fresh executor instead of holding a corpse for the process lifetime.
+        """
+        return self._dead.is_set() or self._closed or self._broken or self._session is None
+
+    def _mark_broken(self, reason: str) -> None:
+        if not self._broken:
+            self._broken = True
+            logger.warning(
+                "MCP transport is unusable; this executor is marked broken so it can "
+                "be replaced: %s", reason)
+
+    def _run(self, coro, timeout: float = CALL_TIMEOUT):
+        if self.is_broken():
+            coro.close()  # never awaited; closing it avoids a "never awaited" warning
+            raise McpError(
+                "MCP session is not available (the server subprocess has exited)")
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except RuntimeError as e:  # loop closed between the check and the submit
+            coro.close()
+            raise McpError(f"MCP session is not available: {e}") from e
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                # An abandoned call_tool would otherwise stay outstanding and the
+                # Snowflake query behind it would keep running (and keep burning
+                # credits) long after the user was told the request failed.
+                future.cancel()
+                raise McpError(f"MCP tool call timed out after {timeout}s")
+            try:
+                return future.result(timeout=min(_DEATH_POLL_INTERVAL, remaining))
+            except concurrent.futures.TimeoutError:
+                if self._dead.is_set() and not future.done():
+                    # The loop stopped while this call was in flight: the coroutine
+                    # will never be resumed, so waiting out `timeout` is pointless.
+                    future.cancel()
+                    raise McpError(
+                        "MCP session died while the query was in flight") from None
 
     def run_query(self, sql: str, role: str = "COPILOT_APP_RO") -> tuple[list, list]:
         """`role` is forwarded as a tool argument so the server executes under the
@@ -161,17 +252,32 @@ class McpExecutor:
         async def call():
             return await self._session.call_tool("run_query", {"sql": sql, "role": role})
 
-        return _parse_tool_result(self._run(call()))
+        try:
+            result = self._run(call())
+        except McpError:
+            raise
+        except Exception as exc:  # transport-level failure, not a tool-level one
+            # Anything escaping call_tool itself is a transport/protocol failure (the
+            # SDK raises "Connection closed" once the subprocess is gone). Tool-level
+            # failures never reach here: they come back as a CallToolResult with
+            # isError set and are turned into McpError by _parse_tool_result below.
+            self._mark_broken(str(exc))
+            raise McpError(f"MCP transport failed: {exc}") from exc
+        return _parse_tool_result(result)
 
     def close(self):
         if self._closed:
             return
         self._closed = True
         if self._stop_event is not None:
-            self._loop.call_soon_threadsafe(self._stop_event.set)
+            try:
+                self._loop.call_soon_threadsafe(self._stop_event.set)
+            except RuntimeError:
+                pass  # already dead: the loop stopped on its own, nothing to signal
         self._thread.join(timeout=10)
         # `_main` returns (ending run_until_complete) once _stop_event is set and
         # the async-with blocks above have unwound, so by the time the thread has
         # joined the loop is idle and safe to close from this (the calling) thread.
         if not self._loop.is_closed():
             self._loop.close()
+        self._dead.set()

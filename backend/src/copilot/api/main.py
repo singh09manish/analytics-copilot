@@ -98,23 +98,61 @@ def _deps():
         sf_ro = SnowflakeClient(role="COPILOT_APP_RO")
         sf_admin = SnowflakeClient(role="COPILOT_ADMIN")
         sf_writer = SnowflakeClient(role="COPILOT_APP_WRITER")
-        executor = None
-        if get_settings().use_mcp:
-            from copilot.mcp_client import McpExecutor
-
-            try:
-                executor = McpExecutor()
-            except Exception:  # degrade to direct execution, never 500 the request
-                logger.warning(
-                    "MCP executor failed to start; falling back to direct "
-                    "Snowflake execution for this process.", exc_info=True)
-                executor = None
+        executor = _build_executor() if get_settings().use_mcp else None
         app.state.provider = provider
         app.state.sf_ro = sf_ro
         app.state.sf_admin = sf_admin
         app.state.sf_writer = sf_writer
         app.state.executor = executor
     return app.state
+
+
+# A rebuild happens inside a live request, so it gets a much shorter readiness
+# budget than the cold-start build: better to degrade to direct execution for this
+# request than to hold a user's /chat open for a full minute.
+_MCP_REBUILD_READY_TIMEOUT = 15
+
+
+def _build_executor(ready_timeout: float | None = None):
+    """Construct an McpExecutor, or return None after logging why it failed."""
+    from copilot.mcp_client import McpExecutor
+
+    try:
+        return McpExecutor() if ready_timeout is None else McpExecutor(ready_timeout=ready_timeout)
+    except Exception:  # degrade to direct execution, never 500 the request
+        logger.warning(
+            "MCP executor failed to start; falling back to direct Snowflake "
+            "execution. Layer 2 re-validation is out of the path until it recovers.",
+            exc_info=True)
+        return None
+
+
+def _live_executor(state):
+    """Return a usable executor, replacing one whose subprocess has died.
+
+    Without this, a dead McpExecutor stayed on app.state for the process lifetime:
+    every /chat then blocked on it (twice, thanks to the graph's repair edge) and
+    the API never recovered. The rebuild is attempted once per detected death; if it
+    also fails we fall back to direct execution, which is only acceptable because the
+    side-effect denylist now lives in sql_guard (layer 1) rather than only in the MCP
+    server -- see the C1/I2 fix.
+    """
+    executor = getattr(state, "executor", None)
+    if executor is None:
+        return None
+    is_broken = getattr(executor, "is_broken", None)
+    if not callable(is_broken) or not is_broken():
+        return executor
+    with _deps_lock:
+        if state.executor is not executor:  # another thread already replaced it
+            return state.executor
+        logger.warning("MCP executor is dead; rebuilding it for subsequent requests.")
+        try:
+            executor.close()
+        except Exception:  # best-effort teardown of a corpse
+            logger.warning("Closing the dead MCP executor failed.", exc_info=True)
+        state.executor = _build_executor(ready_timeout=_MCP_REBUILD_READY_TIMEOUT)
+    return state.executor
 
 
 def _require_role(request: Request) -> str:
@@ -184,9 +222,11 @@ def chat(req: ChatRequest, identity: tuple[str, str] = Depends(_require_identity
     sf_role = "COPILOT_ADMIN" if role == "admin" else "COPILOT_APP_RO"
     # functools.partial keeps the executor's (sql) -> (columns, rows) calling shape
     # that the graph depends on; the role is bound here rather than threaded
-    # through the graph/executor protocol.
-    executor = (functools.partial(state.executor.run_query, role=sf_role)
-                if state.executor else None)
+    # through the graph/executor protocol. _live_executor replaces one whose MCP
+    # subprocess has died instead of handing the graph a corpse to block on.
+    mcp_executor = _live_executor(state)
+    executor = (functools.partial(mcp_executor.run_query, role=sf_role)
+                if mcp_executor is not None else None)
     # The LangGraph checkpointer is a process-global InMemorySaver keyed by thread_id.
     # A client-supplied conversation_id must never be used as that key directly, or
     # one user could supply another user's conversation_id and read their history.

@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 import snowflake.connector
@@ -25,9 +26,19 @@ class SnowflakeClient:
         self._settings = get_settings()
         self._role = role or self._settings.snowflake_role
         self._conn: snowflake.connector.SnowflakeConnection | None = None
+        # These clients are process-global (app.state.sf_ro/sf_admin/sf_writer) and
+        # every sync endpoint runs in FastAPI's threadpool, so first use is genuinely
+        # concurrent. Check-then-act on `_conn` let two threads each open a Snowflake
+        # session, one of which was then overwritten and leaked until its idle
+        # timeout. Connecting under the lock makes first use happen exactly once.
+        self._conn_lock = threading.Lock()
 
     def _connection(self) -> snowflake.connector.SnowflakeConnection:
-        if self._conn is None or self._conn.is_closed():
+        if self._conn is not None and not self._conn.is_closed():
+            return self._conn
+        with self._conn_lock:
+            if self._conn is not None and not self._conn.is_closed():
+                return self._conn  # lost the race; another thread connected
             s = self._settings
             conn = snowflake.connector.connect(
                 account=s.snowflake_account,

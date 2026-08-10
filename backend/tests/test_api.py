@@ -281,6 +281,81 @@ def test_deps_mcp_construction_failure_falls_back_gracefully(monkeypatch, caplog
     _reset_deps_state()
 
 
+# --- Final review, Critical finding C2: an McpExecutor whose subprocess has died
+# must not stay on app.state for the process lifetime. /chat replaces it, and if the
+# replacement can't be built it degrades to direct execution rather than 500-ing or
+# blocking (safe now that the side-effect denylist lives in sql_guard, layer 1).
+
+
+class _DeadExecutor:
+    def __init__(self):
+        self.closed = False
+
+    def is_broken(self):
+        return True
+
+    def close(self):
+        self.closed = True
+
+    def run_query(self, sql, role="COPILOT_APP_RO"):
+        raise AssertionError("a dead executor must never be asked to run a query")
+
+
+def test_chat_replaces_a_dead_mcp_executor(monkeypatch):
+    c = _client(monkeypatch)
+    dead = _DeadExecutor()
+    app.state.executor = dead
+    fresh = _RoleTrackingExecutor()
+    monkeypatch.setattr(main_module, "_build_executor", lambda ready_timeout=None: fresh)
+
+    tok = _token(c)["token"]
+    r = c.post("/chat", json={"question": "Which models?"},
+               headers={"authorization": f"Bearer {tok}"})
+
+    assert r.status_code == 200
+    assert dead.closed, "the corpse must be torn down, not just dropped"
+    assert app.state.executor is fresh
+    assert fresh.calls, "the rebuilt executor should serve the request"
+    app.state.executor = None
+
+
+def test_chat_falls_back_to_direct_execution_when_the_rebuild_fails(monkeypatch, caplog):
+    c = _client(monkeypatch)
+    app.state.executor = _DeadExecutor()
+    monkeypatch.setattr(main_module, "_build_executor", lambda ready_timeout=None: None)
+
+    tok = _token(c)["token"]
+    with caplog.at_level(logging.WARNING):
+        r = c.post("/chat", json={"question": "Which models?"},
+                   headers={"authorization": f"Bearer {tok}"})
+
+    assert r.status_code == 200
+    assert app.state.executor is None
+    assert app.state.sf_ro.queries, "should have fallen back to the role-scoped session"
+    assert "mcp" in caplog.text.lower(), "the degradation must be observable"
+
+
+def test_chat_keeps_a_healthy_mcp_executor(monkeypatch):
+    """The liveness check must not churn a perfectly good executor."""
+    c = _client(monkeypatch)
+
+    class _HealthyExecutor(_RoleTrackingExecutor):
+        def is_broken(self):
+            return False
+
+    healthy = _HealthyExecutor()
+    app.state.executor = healthy
+    monkeypatch.setattr(main_module, "_build_executor",
+                        lambda ready_timeout=None: pytest.fail("must not rebuild"))
+
+    tok = _token(c)["token"]
+    r = c.post("/chat", json={"question": "Which models?"},
+               headers={"authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+    assert app.state.executor is healthy
+    app.state.executor = None
+
+
 # --- Task 7 follow-up review, Finding 4: the app must refuse to start with the
 # published default JWT secret still in force (it's the whole authorization
 # boundary for role-scoped Snowflake access). Lifespan only runs when TestClient
