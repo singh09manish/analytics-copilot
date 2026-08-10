@@ -1,7 +1,10 @@
 import type { ChatResponse, LoginResponse } from "./types";
 import { clearAuth, getAuth } from "./auth";
 
-const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+// Same-origin in production: CloudFront serves the SPA and proxies /api/* to the
+// ALB, so there is no cross-origin request and no CORS preflight. Vite's dev server
+// proxies /api to the local backend (see vite.config.ts).
+const BASE = "/api";
 
 export class AuthExpiredError extends Error {}
 

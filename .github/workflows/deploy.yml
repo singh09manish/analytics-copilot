@@ -1,0 +1,163 @@
+name: deploy
+on:
+  push: {branches: [main]}
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # required to request the OIDC token
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  # Must track local.name/var.project in infra/main.tf -- the ECS cluster, ECS
+  # service, and ECR repository name all derive from that single value in
+  # Terraform. Actions has no direct way to read a Terraform local, so these
+  # are duplicated here deliberately and pinned by this comment rather than
+  # silently drifting.
+  ECS_CLUSTER: analytics-copilot
+  ECS_SERVICE: analytics-copilot
+  ECR_REPO: analytics-copilot
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # workflow_dispatch is selectable from ANY ref that carries this file, but
+    # the OIDC trust policy (infra/iam.tf) only allows the subject
+    # repo:<owner>/<repo>:ref:refs/heads/main. Dispatching from a feature
+    # branch would otherwise fail deep inside configure-aws-credentials with
+    # an opaque STS AccessDenied. Fail fast and readably instead.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify required repo variables are set
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          WEB_BUCKET: ${{ vars.WEB_BUCKET }}
+          CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          missing=0
+          for v in AWS_DEPLOY_ROLE_ARN WEB_BUCKET CLOUDFRONT_DISTRIBUTION_ID; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Repo variable $v is not set -- Task 8 sets it from Terraform outputs after the first apply"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      # GitHub-hosted runners ship only the `default` builder (the docker
+      # driver), which cannot import/export a cache -- `cache-to: type=gha`
+      # fails with "cache export feature is currently not supported for
+      # docker driver" on that builder. buildx with the docker-container
+      # driver is required. Mirrors the `image` job in ci.yml, which needs
+      # the same cache and hits the same runner default.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Without this, buildx also pushes an unrequested provenance
+          # attestation manifest alongside the image. It isn't tagged, so the
+          # "expire untagged after 1 day" lifecycle rule (infra/ecr.tf) sweeps
+          # it up regardless -- but leaving it out avoids the confusing extra
+          # artifact in ECR between pushes.
+          provenance: false
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+
+      # Built here, before the rollout below, so a tsc/build failure never
+      # leaves the new backend image live behind an SPA that was never
+      # actually verified to build. Uploaded to S3 only after the rollout
+      # (further down) -- new-API/old-SPA is the backward-compatible window;
+      # old-API/new-SPA is not, so publish must not move earlier than deploy.
+      - name: Build the SPA
+        run: cd frontend && npm ci && npm run build
+
+      - name: Roll out the new image
+        run: |
+          dep=$(aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --force-new-deployment \
+            --query 'service.deployments[?status==`PRIMARY`]|[0].id' --output text)
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          # `wait services-stable` only polls until length(deployments) == 1 &&
+          # runningCount == desiredCount -- it never looks at rolloutState. A
+          # circuit-breaker rollback (infra/ecs.tf) also ends at exactly that
+          # state: one deployment, back at steady count, because the desired
+          # image was rejected and ECS settled on the old task. So a REJECTED
+          # deployment reports the same waiter success as a COMPLETED one, and
+          # the pipeline would happily publish the SPA against a backend that
+          # never actually changed. Confirm the PRIMARY deployment is still the
+          # one just created, and that it reached COMPLETED, or fail loudly.
+          read -r now state < <(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].deployments[?status==`PRIMARY`]|[0].[id,rolloutState]' --output text)
+          if [ "$dep" != "$now" ] || [ "$state" != "COMPLETED" ]; then
+            echo "::error::ECS rollout did not complete cleanly (deployment $dep -> $now, rolloutState=$state) -- likely a circuit-breaker rollback"
+            exit 1
+          fi
+
+      # Hashed assets are immutable and cached hard; index.html must never be, or
+      # browsers keep loading the previous build's asset names.
+      - name: Publish the SPA
+        env:
+          WEB_BUCKET: ${{ vars.WEB_BUCKET }}
+        run: |
+          aws s3 sync frontend/dist "s3://$WEB_BUCKET" \
+            --delete --cache-control "public,max-age=31536000,immutable" \
+            --exclude index.html
+          aws s3 cp frontend/dist/index.html "s3://$WEB_BUCKET/index.html" \
+            --cache-control "no-cache,no-store,must-revalidate"
+
+      - name: Invalidate the CDN
+        env:
+          CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/*" >/dev/null
+
+      # Optional: set vars.APP_URL (the Terraform `app_url` output) to enable.
+      # /healthz is deliberately not used here -- it lives at the ALB/root
+      # level for the ALB's own health check and is not reachable through
+      # CloudFront, whose default behaviour routes everything but /api/* to
+      # the S3 SPA origin. Posting bad credentials to the login endpoint
+      # always fails auth, but the status code distinguishes "edge reached a
+      # live origin" (401/422) from a network failure, an edge/origin 5xx, or
+      # a request that silently landed on the SPA's S3 origin (403/404)
+      # instead of the ALB.
+      - name: Smoke-test the deployed app
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "vars.APP_URL not set -- skipping smoke test (set it from the Terraform 'app_url' output to enable)"
+            exit 0
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -d '{}' \
+            "$APP_URL/api/auth/login")
+          case "$code" in
+            200|401|422) echo "Login endpoint responded $code -- app is live." ;;
+            *) echo "::error::Login endpoint returned unexpected status $code -- deploy may not be live"; exit 1 ;;
+          esac

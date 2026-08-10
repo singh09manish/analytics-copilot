@@ -469,6 +469,21 @@ provides HTTPS across the whole app without owning a domain, and it collapses th
 a single origin so CORS is moot. The alternatives were an ACM certificate on the ALB
 (requires a domain) or an HTTPS page calling an HTTP API (blocked as mixed content).
 
+### No distribution-level SPA fallback for 403/404
+`custom_error_response` is a *distribution*-level setting in CloudFront — it applies to
+every behaviour, not just the default one. Adding the conventional SPA rule (403/404 →
+200 + `/index.html`) would rewrite `/api/*` 403s and 404s into HTML too, so a mistyped or
+undeployed API path would come back with `res.ok === true` and a `<!doctype html>` body:
+`api.ts` would never throw `ApiError`, and `res.json()` would fail with an opaque
+`SyntaxError` instead of a clean, visible 404. That converts exactly the failure this
+kind of routing change risks — a missed or renamed route — from loud into silent. The
+fallback is also solving a problem this app does not have: the SPA has no client-side
+router (`main.tsx` renders `<App/>` directly), so `default_root_object = "index.html"`
+already serves the one URL that exists, `/`. Left out. If client-side routing is ever
+added, the fallback must be scoped to the default behaviour only — e.g. a CloudFront
+Function on `viewer-request` for that behaviour — never the distribution-level setting,
+or it will mask API errors again.
+
 ### GitHub Actions authenticates via OIDC
 No long-lived AWS keys stored in the repo. The trust policy is scoped to branches in this
 repo, so a fork's pull-request workflow cannot assume the role.
@@ -488,6 +503,26 @@ IP is not an entry point. A deliberate cost trade, stated rather than hidden.
 Terraform creates the secret container but never its contents — the values are pushed by a
 separate script — so no secret value ever lands in Terraform state.
 
+### Where "identifier" ends and "credential" begins, for this app's Snowflake values
+**Found in the Task 8 review.** `scripts/aws_bootstrap_secret.py` treats `SNOWFLAKE_ACCOUNT`
+as one of the six keys it pushes into Secrets Manager, alongside real credentials
+(`ANTHROPIC_API_KEY`, `JWT_SECRET`, both password hashes, the Snowflake private-key PEM).
+But `docs/PENDING-ACTIONS.md` had the live account identifier committed in plain text —
+`git log -S` confirms it predates Phase 3A entirely, so nothing in this task introduced
+it, but the two treatments disagreed with each other and that's worth resolving rather
+than leaving as an inconsistency. The account identifier (`KETNSVS-VM01655`-shaped:
+`<locator>.<region>`) is genuinely low-sensitivity — it names *which* Snowflake account to
+connect to, the same way a hostname does, and getting in requires the private key, which
+authenticates via key-pair auth and is never valid on its own. It has been redacted from
+`docs/PENDING-ACTIONS.md` (referencing `.env` instead) so the two treatments agree, but
+the redaction is about consistency, not a claim that the identifier was ever a meaningful
+leak on its own. The line, going forward: the account identifier is routing information
+(closer to a hostname or a repo name than a secret); the private key and the Anthropic API
+key are credentials, full stop, and are the only two of the six bootstrap keys whose
+disclosure alone grants access to something. The other three (`JWT_SECRET`, both bcrypt
+hashes) sit in between — not identifiers, but not usable without also compromising this
+app's own auth flow — and are treated as credentials because that's the safer default.
+
 ### Terraform state is local
 An S3 and DynamoDB backend is the production answer and worth saying out loud, but
 provisioning it is a second bootstrap problem for a single operator. State files are
@@ -497,6 +532,96 @@ gitignored, which means teardown must happen from the same machine.
 `make aws-down` runs `terraform destroy`. Buckets and registries are set to force-destroy
 so teardown does not stall on leftover objects. The failure mode this avoids is an account
 quietly accruing charges for resources nobody remembers creating.
+
+### The deploy pipeline verifies the rollout is COMPLETED, not just stable
+**Found in review.** `aws ecs wait services-stable` only polls until
+`length(deployments) == 1 && runningCount == desiredCount`; it never inspects
+`rolloutState`. A circuit-breaker rollback (below) ends at exactly that same state — one
+deployment, back at steady count — because the rejected image never became the running
+task. So a bad image reported the same waiter success as a good one, and the pipeline
+would happily publish the SPA against a backend that never actually changed. The fix:
+capture the PRIMARY deployment id from `update-service`, and after the wait, assert the
+PRIMARY deployment is still that id and its `rolloutState` is `COMPLETED`, failing the job
+otherwise. This also closes an eventual-consistency race where the waiter's first poll can
+observe pre-update state and return success in seconds.
+
+### The circuit breaker aborts bad deployments; it does not roll back content
+`deployment_circuit_breaker { enable = true, rollback = true }` (`infra/ecs.tf`) stops the
+waiter above from hanging for ~10 minutes on a crash-looping task, and it leaves the
+already-running old task serving instead of going to zero. That is genuinely useful, but
+"rollback" is not what it sounds like here. The deploy pipeline never registers a new task
+definition revision — the deploy IAM policy deliberately grants no
+`ecs:RegisterTaskDefinition` or `iam:PassRole` — so it deploys by forcing a new placement
+of the *same* revision, whose container image reference is the mutable `:latest` ECR tag.
+The pipeline moves `:latest` onto the new image before the rollout is even attempted, so
+by the time the circuit breaker fires, `:latest` already points at the broken image
+regardless of outcome. "Rollback" therefore means: the bad deployment attempt is aborted
+and the previously-running task keeps running on the image it already pulled, but
+`:latest` stays poisoned — any later replacement of that task (a host failure, an AZ
+event, a manual restart) will pull `:latest` and silently adopt the broken image.
+
+Genuine rollback would need either a human (or a follow-up pipeline step) to re-tag
+`:latest` back onto a known-good `:<git-sha>` and force a new deployment, or a move to
+per-SHA task definition revisions with real `RegisterTaskDefinition`/`PassRole` grants so
+ECS's own revision-based rollback has something meaningful to revert to. Both are left out
+of Phase 3A: the former is a manual runbook step, not yet automated; the latter widens the
+deploy role's IAM surface for a demo-scale, single-operator system where a bad `:latest`
+is caught by the pipeline's post-invalidation smoke-test step and fixed by hand within
+minutes, not autonomously.
+
+### `terraform validate` cannot catch API-level rejections — only a real apply can
+
+**Found during the first live apply (Task 8).** `terraform fmt` and `terraform validate`
+passed cleanly throughout Tasks 4–6, but the first real `terraform apply` still failed
+partway on two errors neither one could have caught: `aws_security_group.alb`'s
+description contained an apostrophe (`"...CloudFront's origin-facing ranges."`), which
+`validate` accepts as a perfectly good HCL string but AWS's `CreateSecurityGroup` API
+rejects at 400 — the security-group-description charset (`a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*`)
+has no apostrophe in it. And `aws_cloudfront_cache_policy.api` set `min_ttl`/`default_ttl`/
+`max_ttl` to `0` (caching disabled) while also setting
+`enable_accept_encoding_gzip`/`brotli` — valid per the provider's schema, but
+`CreateCachePolicy` rejects those two parameters once a policy's TTLs mean there is no
+cache key left for them to vary. Both are checked only by the destination API at apply
+time, not by anything Terraform can verify offline: `validate` checks HCL syntax and
+provider *schema* (types, required attributes, resource references), never the target
+API's runtime value constraints. The fix for the cache policy was to stop hand-maintaining
+one at all and reference AWS's managed `Managed-CachingDisabled` policy instead (id
+`4135ea2d-6df8-44a3-9df3-4b5a84be39ad`, confirmed via `aws cloudfront list-cache-policies
+--type managed` rather than trusted from memory) — it is purpose-built for exactly this
+API origin case and cannot drift the way a custom policy can. This is exactly why the
+plan sequenced a real `terraform apply` as its own task before the `v0.3-aws` tag, rather
+than treating a clean `validate` as sufficient signoff on the infra code.
+
+A third issue surfaced the same way, one step later: after both fixes above, `make
+aws-secret` pushed the real secret values, and the documented cleanup step —
+`terraform state rm aws_secretsmanager_secret_version.placeholder` — was run to stop
+Terraform tracking the now-superseded placeholder version (see the removed comment this
+replaces, previously in `infra/secrets.tf`). A follow-up `terraform plan`, run purely as a
+verification step, showed `aws_secretsmanager_secret_version.placeholder will be created`
+— `state rm` does not remove a resource's *declaration*, only Terraform's state pointer to
+it, so with the block still present in `secrets.tf`, the very next `terraform apply` (by
+anyone, for any reason — an unrelated infra change, or `make aws-up` re-run for routine
+idempotency) would have recreated it with the hardcoded `"unset"` JSON and made it
+`AWSCURRENT`, overwriting the live secret. That plan was never applied. The actual fix,
+once `make aws-secret` has run at least once, is to delete the
+`aws_secretsmanager_secret_version` resource from Terraform entirely rather than manage
+its lifecycle at all — Terraform was never supposed to own this secret's contents (see
+"Secrets in Secrets Manager, injected by the ECS agent" above), and the placeholder was
+only ever there to give the ECS task definition something to reference before
+`aws_bootstrap_secret.py` existed. `infra/secrets.tf` now has no
+`aws_secretsmanager_secret_version` resource at all; a comment in its place documents why,
+what populates the secret instead (`make aws-secret`, which must run before the first
+deploy on a fresh account), and what happens if that step is skipped — the ECS task fails
+to resolve its `secrets` block at container start and never comes up, a loud failure
+rather than a silent or insecure one. `terraform plan` after the removal reported `No
+changes. Your infrastructure matches the configuration.`, confirming there is no longer
+any create/recreate hazard here.
+
+This general pattern — `validate` and even a clean `plan` both agreeing a resource is fine
+right up until state and configuration disagree about whether it still exists — is worth
+remembering beyond this one secret: any resource with `lifecycle { ignore_changes }` used
+to protect a value Terraform doesn't really own is a candidate for the same failure mode,
+and the fix is usually to stop declaring the resource, not to keep patching around it.
 
 ---
 

@@ -49,36 +49,36 @@ The gate exists because the JWT's `role` claim selects the Snowflake session, so
 token is privilege escalation. A weak or public signing key is not a misconfiguration to
 warn about — it is a reason not to run.
 
-### 1.2 Dependency construction — `api/main.py:82-119`
+### 1.2 Dependency construction — `api/main.py:86-123`
 
 `_deps()` is called by every request handler:
 
-1. `main.py:100` — fast path: if `app.state.provider` exists, return immediately, no lock.
-2. `main.py:102-104` — take `_deps_lock` (`main.py:79`), then re-check inside the lock
+1. `main.py:104` — fast path: if `app.state.provider` exists, return immediately, no lock.
+2. `main.py:106-108` — take `_deps_lock` (`main.py:83`), then re-check inside the lock
    (double-checked locking; a thread that lost the race returns the built state).
-3. `main.py:109-113` — build **into locals**, in order: `AnthropicProvider()`, then
+3. `main.py:113-117` — build **into locals**, in order: `AnthropicProvider()`, then
    `SnowflakeClient` for `COPILOT_APP_RO`, `COPILOT_ADMIN`, and `COPILOT_APP_WRITER`, then
    the MCP executor if `use_mcp`.
-4. `main.py:114-118` — only once all five succeed, publish all of them to `app.state`.
+4. `main.py:118-122` — only once all five succeed, publish all of them to `app.state`.
 
 Publishing last is load-bearing. An earlier version set `app.state.provider` first, and
 because sync endpoints run in FastAPI's threadpool, concurrent first requests read
 half-initialised state — measured at seven of eight returning 500.
 
 A Snowflake client failure propagates (a 500 on that request, retried cleanly next time).
-Only the MCP executor is allowed to fail softly: `_build_executor` (`main.py:128-139`)
+Only the MCP executor is allowed to fail softly: `_build_executor` (`main.py:132-143`)
 catches any exception, logs with a traceback, and returns `None` so the app degrades to
 direct execution rather than refusing to answer.
 
-### 1.3 MCP recovery — `api/main.py:142-167`
+### 1.3 MCP recovery — `api/main.py:146-171`
 
 `_live_executor(state)` runs on every chat request:
 
-- `main.py:152-154` — `None` executor (disabled or failed at startup) → return `None`.
-- `main.py:155-157` — healthy executor → return it unchanged.
-- `main.py:158-167` — broken → under the lock, re-check nobody else already replaced it,
+- `main.py:156-158` — `None` executor (disabled or failed at startup) → return `None`.
+- `main.py:159-161` — healthy executor → return it unchanged.
+- `main.py:162-171` — broken → under the lock, re-check nobody else already replaced it,
   best-effort `close()`, rebuild with a **15-second** timeout (`_MCP_REBUILD_READY_TIMEOUT`,
-  `main.py:125`) rather than the 60-second cold-start budget, and republish.
+  `main.py:129`) rather than the 60-second cold-start budget, and republish.
 
 Without this, a dead subprocess stayed on `app.state` forever and every request blocked on
 it twice — once normally, once through the repair edge.
@@ -87,40 +87,40 @@ it twice — once normally, once through the repair edge.
 
 ## 2. One chat request, end to end
 
-`POST /chat` → `main.py:242`.
+`POST /api/chat` → `main.py:259`.
 
-1. **Authenticate** — `_require_identity` (`main.py:203-220`). Reads the `Authorization`
-   header (`main.py:213-215`); missing or non-`Bearer` → 401. Decodes **once** via
+1. **Authenticate** — `_require_identity` (`main.py:207-224`). Reads the `Authorization`
+   header (`main.py:217-219`); missing or non-`Bearer` → 401. Decodes **once** via
    `auth.decode_token` (`auth.py:39-43`, `algorithms=["HS256"]`), returns
    `(payload["role"], payload["sub"])`. Catches `AuthError` **and** `KeyError` together
-   (`main.py:219-220`) so a validly-signed token missing a claim is a 401, not a 500.
-2. **Validate input** — empty question → 400 (`main.py:244-245`). A `conversation_id`
-   containing `:` → 400 (`main.py:251-252`), because `:` separates the checkpointer's
+   (`main.py:223-224`) so a validly-signed token missing a claim is a 401, not a 500.
+2. **Validate input** — empty question → 400 (`main.py:248-249`). A `conversation_id`
+   containing `:` → 400 (`main.py:255-256`), because `:` separates the checkpointer's
    thread key and must stay unambiguous.
-3. **Build dependencies** — `_deps()` (`main.py:253`).
-4. **Pick the retrieval session** — `main.py:254`:
+3. **Build dependencies** — `_deps()` (`main.py:257`).
+4. **Pick the retrieval session** — `main.py:258`:
    `sf = state.sf_admin if role == "admin" else state.sf_ro`.
-5. **Pick the execution role** — `main.py:263`:
+5. **Pick the execution role** — `main.py:267`:
    `sf_role = "COPILOT_ADMIN" if role == "admin" else "COPILOT_APP_RO"`. Derived only from
    the verified token, fail-closed to the masked role. Masking CASEs on `CURRENT_ROLE()`,
    so the role must follow the query all the way to execution, not just retrieval.
-6. **Get a live executor** — `_live_executor(state)` (`main.py:268`), then bind the role
-   onto it with `functools.partial` (`main.py:269-270`) so the graph still sees the
+6. **Get a live executor** — `_live_executor(state)` (`main.py:272`), then bind the role
+   onto it with `functools.partial` (`main.py:273-274`) so the graph still sees the
    `(sql) -> (columns, rows)` shape it expects.
 7. **Namespace the conversation** — `_scoped_conversation_id(email, id)`
-   (`main.py:180-188`) returns `f"{email}:{conversation_id}"`, or `None` if the client sent
+   (`main.py:184-192`) returns `f"{email}:{conversation_id}"`, or `None` if the client sent
    none. `None` stays `None`: an anonymous turn gets no memory and mints no checkpoint.
-8. **Run the agent** — `answer_question(...)` (`main.py:278-279` → `pipeline.py:26`).
-9. **Log the request** — `log_request(...)` (`main.py:280-283`). The logged conversation id
-   comes from `_logged_conversation_id` (`main.py:191-200`), which is *always*
+8. **Run the agent** — `answer_question(...)` (`main.py:282-283` → `pipeline.py:26`).
+9. **Log the request** — `log_request(...)` (`main.py:284-287`). The logged conversation id
+   comes from `_logged_conversation_id` (`main.py:195-204`), which is *always*
    identity-scoped and never `None` — `REQUEST_LOG` has no user column, so without this an
    audit row cannot name its actor.
-10. **Return** the `ChatResponse` (`main.py:284`).
+10. **Return** the `ChatResponse` (`main.py:288`).
 
-`POST /feedback` (`main.py:287-301`) follows the same auth path, validates the rating, and
-writes via `sf_writer`. Unlike request logging, a feedback write failure **is** surfaced —
-503 (`main.py:299-300`) — because the user is owed the truth about whether their feedback
-was recorded.
+`POST /api/feedback` (`main.py:304-318`) follows the same auth path, validates the rating,
+and writes via `sf_writer`. Unlike request logging, a feedback write failure **is**
+surfaced — 503 (`main.py:316-317`) — because the user is owed the truth about whether their
+feedback was recorded.
 
 ---
 
@@ -373,8 +373,8 @@ per request, thanks to the repair edge. There are two death shapes: the loop can
    **No signature check** — it is explicitly a UX check (`auth.ts:9-13`); the server's 401 is
    the real boundary. An unparseable token counts as expired, so a malformed value clears
    rather than crashes.
-4. `api.ts:18-35` — `post<T>()` attaches `authorization: Bearer <token>` (`20-22`), and on a
-   401 clears storage and throws `AuthExpiredError` (`29-32`). Other non-OK statuses throw
+4. `api.ts:21-38` — `post<T>()` attaches `authorization: Bearer <token>` (`23-25`), and on a
+   401 clears storage and throws `AuthExpiredError` (`32-35`). Other non-OK statuses throw
    `ApiError` carrying `.status`, which is how `Login.tsx` distinguishes bad credentials from
    an unreachable server.
 5. `App.tsx:34-35` — one conversation id per mount, via a lazy ref and `newConversationId()`
@@ -386,8 +386,10 @@ per request, thanks to the repair edge. There are two death shapes: the loop can
 7. `App.tsx:61-65` — an `AuthExpiredError` from `sendChat` triggers `logout()`; any other
    error is appended to the transcript as an error message.
 
-> `api.ts:4` currently points at `http://localhost:8000`. Phase 3A changes this to the
-> same-origin `/api` prefix with a Vite dev proxy — see the Phase 3A plan.
+> `api.ts:7` sets `BASE = "/api"` — a relative, same-origin path, not an absolute URL. In
+> AWS, CloudFront serves the SPA and forwards `/api/*` to the ALB, so this resolves against
+> whatever origin served the page (no CORS). In local dev, Vite's `server.proxy` entry for
+> `/api` (`vite.config.ts`) forwards those requests to `http://127.0.0.1:8000`.
 
 ---
 

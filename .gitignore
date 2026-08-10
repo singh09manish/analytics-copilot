@@ -13,3 +13,13 @@ warehouse/dbt/dbt_packages/
 warehouse/dbt/logs/
 warehouse/dbt/.user.yml
 secrets/
+
+# Terraform
+infra/.terraform/
+# infra/.terraform.lock.hcl is intentionally tracked: it pins provider versions
+# (e.g. hashicorp/tls) so `terraform init` is reproducible across machines.
+terraform.tfstate
+terraform.tfstate.*
+*.tfvars
+!infra/terraform.tfvars.example
+crash.log

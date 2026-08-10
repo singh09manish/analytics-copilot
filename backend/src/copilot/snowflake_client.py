@@ -7,11 +7,19 @@ from cryptography.hazmat.primitives import serialization
 from copilot.config import REPO_ROOT, get_settings
 
 
-def _load_private_key(path: str) -> bytes:
-    p = Path(path)
-    if not p.is_absolute():
-        p = REPO_ROOT / p
-    key = serialization.load_pem_private_key(p.read_bytes(), password=None)
+def _load_private_key(path: str, pem: str = "") -> bytes:
+    if pem.strip():
+        data = pem.encode()
+    else:
+        p = Path(path)
+        if not p.is_absolute():
+            p = REPO_ROOT / p
+        if not p.exists():
+            raise FileNotFoundError(
+                f"No Snowflake private key: {p} does not exist and "
+                "SNOWFLAKE_PRIVATE_KEY_PEM is empty. Set one of them.")
+        data = p.read_bytes()
+    key = serialization.load_pem_private_key(data, password=None)
     return key.private_bytes(
         encoding=serialization.Encoding.DER,
         format=serialization.PrivateFormat.PKCS8,
@@ -43,7 +51,8 @@ class SnowflakeClient:
             conn = snowflake.connector.connect(
                 account=s.snowflake_account,
                 user=s.snowflake_user,
-                private_key=_load_private_key(s.snowflake_private_key_path),
+                private_key=_load_private_key(
+                    s.snowflake_private_key_path, s.snowflake_private_key_pem),
                 warehouse=s.snowflake_warehouse,
                 database=s.snowflake_database,
                 role=self._role,

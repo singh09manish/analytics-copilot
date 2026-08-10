@@ -1,0 +1,3 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+github_repo = "singh09manish/analytics-copilot"
+region      = "us-east-1"

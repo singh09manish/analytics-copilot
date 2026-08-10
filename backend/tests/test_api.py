@@ -34,7 +34,7 @@ def _client(monkeypatch):
 
 
 def _token(client, email="analyst@demo"):
-    r = client.post("/auth/login", json={"email": email, "password": "pw123"})
+    r = client.post("/api/auth/login", json={"email": email, "password": "pw123"})
     assert r.status_code == 200
     return r.json()
 
@@ -43,18 +43,18 @@ def test_login_success_and_failure(monkeypatch):
     c = _client(monkeypatch)
     body = _token(c, "admin@demo")
     assert body["role"] == "admin" and body["token"]
-    assert c.post("/auth/login", json={"email": "admin@demo", "password": "no"}).status_code == 401
+    assert c.post("/api/auth/login", json={"email": "admin@demo", "password": "no"}).status_code == 401
 
 
 def test_chat_requires_auth(monkeypatch):
     c = _client(monkeypatch)
-    assert c.post("/chat", json={"question": "hi"}).status_code == 401
+    assert c.post("/api/chat", json={"question": "hi"}).status_code == 401
 
 
 def test_chat_uses_role_scoped_session_and_logs(monkeypatch):
     c = _client(monkeypatch)
     tok = _token(c)["token"]
-    r = c.post("/chat", json={"question": "Which models?"},
+    r = c.post("/api/chat", json={"question": "Which models?"},
                headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 200
     assert r.json()["request_id"]
@@ -66,7 +66,7 @@ def test_chat_uses_role_scoped_session_and_logs(monkeypatch):
 def test_admin_chat_uses_admin_session(monkeypatch):
     c = _client(monkeypatch)
     tok = _token(c, "admin@demo")["token"]
-    c.post("/chat", json={"question": "Which models?"},
+    c.post("/api/chat", json={"question": "Which models?"},
            headers={"authorization": f"Bearer {tok}"})
     assert app.state.sf_admin.queries
 
@@ -74,7 +74,7 @@ def test_admin_chat_uses_admin_session(monkeypatch):
 def test_feedback_recorded(monkeypatch):
     c = _client(monkeypatch)
     tok = _token(c)["token"]
-    r = c.post("/feedback",
+    r = c.post("/api/feedback",
                json={"request_id": "rid", "conversation_id": "c1",
                      "rating": "down", "comment": "wrong number"},
                headers={"authorization": f"Bearer {tok}"})
@@ -85,6 +85,23 @@ def test_feedback_recorded(monkeypatch):
 
 def test_healthz_open():
     assert TestClient(app).get("/healthz").json() == {"status": "ok"}
+
+
+def test_unprefixed_routes_are_gone(monkeypatch):
+    """Regression guard: every route moved under /api (CloudFront forwards /api/*
+    to the ALB; see the comment above app = FastAPI(...) in main.py), but nothing
+    asserted the old unprefixed paths stopped resolving. A future accidental
+    re-registration of a bare /chat, /auth/login, or /feedback route would be
+    invisible to the rest of this suite while quietly exposing a second,
+    unintended surface. /healthz is the one exception -- it deliberately stays at
+    the root for the ALB's own health check, which talks to the task directly and
+    never goes through CloudFront."""
+    c = _client(monkeypatch)
+    assert c.post("/chat", json={"question": "hi"}).status_code == 404
+    assert c.post("/auth/login", json={"email": "analyst@demo", "password": "pw123"}).status_code == 404
+    assert c.post("/feedback", json={"request_id": "r", "conversation_id": None,
+                                   "rating": "up", "comment": None}).status_code == 404
+    assert c.get("/healthz").status_code == 200
 
 
 class _TrackingProvider(FakeProvider):
@@ -115,12 +132,12 @@ def test_same_conversation_id_does_not_leak_across_users(monkeypatch):
     tok_admin = _token(c, "admin@demo")["token"]
     shared_conversation_id = "shared-conv"
 
-    r1 = c.post("/chat", json={"question": "Which models?",
+    r1 = c.post("/api/chat", json={"question": "Which models?",
                                 "conversation_id": shared_conversation_id},
                headers={"authorization": f"Bearer {tok_analyst}"})
     assert r1.status_code == 200
 
-    r2 = c.post("/chat", json={"question": "unrelated admin question",
+    r2 = c.post("/api/chat", json={"question": "unrelated admin question",
                                 "conversation_id": shared_conversation_id},
                headers={"authorization": f"Bearer {tok_admin}"})
     assert r2.status_code == 200
@@ -155,7 +172,7 @@ def test_admin_chat_routes_mcp_execution_to_copilot_admin_role(monkeypatch):
     executor = _RoleTrackingExecutor()
     app.state.executor = executor
     tok = _token(c, "admin@demo")["token"]
-    r = c.post("/chat", json={"question": "Which models?"},
+    r = c.post("/api/chat", json={"question": "Which models?"},
                headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 200
     assert executor.calls
@@ -167,7 +184,7 @@ def test_analyst_chat_routes_mcp_execution_to_copilot_app_ro_role(monkeypatch):
     executor = _RoleTrackingExecutor()
     app.state.executor = executor
     tok = _token(c)["token"]
-    r = c.post("/chat", json={"question": "Which models?"},
+    r = c.post("/api/chat", json={"question": "Which models?"},
                headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 200
     assert executor.calls
@@ -314,7 +331,7 @@ def test_chat_replaces_a_dead_mcp_executor(monkeypatch):
     monkeypatch.setattr(main_module, "_build_executor", lambda ready_timeout=None: fresh)
 
     tok = _token(c)["token"]
-    r = c.post("/chat", json={"question": "Which models?"},
+    r = c.post("/api/chat", json={"question": "Which models?"},
                headers={"authorization": f"Bearer {tok}"})
 
     assert r.status_code == 200
@@ -331,7 +348,7 @@ def test_chat_falls_back_to_direct_execution_when_the_rebuild_fails(monkeypatch,
 
     tok = _token(c)["token"]
     with caplog.at_level(logging.WARNING):
-        r = c.post("/chat", json={"question": "Which models?"},
+        r = c.post("/api/chat", json={"question": "Which models?"},
                    headers={"authorization": f"Bearer {tok}"})
 
     assert r.status_code == 200
@@ -354,7 +371,7 @@ def test_chat_keeps_a_healthy_mcp_executor(monkeypatch):
                         lambda ready_timeout=None: pytest.fail("must not rebuild"))
 
     tok = _token(c)["token"]
-    r = c.post("/chat", json={"question": "Which models?"},
+    r = c.post("/api/chat", json={"question": "Which models?"},
                headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 200
     assert app.state.executor is healthy
@@ -384,7 +401,7 @@ def test_chat_token_without_sub_claim_is_401_not_500(monkeypatch):
     c = _client(monkeypatch)
     s = auth.get_settings()
     bad = pyjwt.encode({"role": "analyst"}, s.jwt_secret, algorithm="HS256")  # no "sub"
-    r = c.post("/chat", json={"question": "hi"},
+    r = c.post("/api/chat", json={"question": "hi"},
                headers={"authorization": f"Bearer {bad}"})
     assert r.status_code == 401
 
@@ -396,7 +413,7 @@ def test_chat_token_without_sub_claim_is_401_not_500(monkeypatch):
 
 def test_login_normalizes_email_for_token_subject(monkeypatch):
     c = _client(monkeypatch)
-    r = c.post("/auth/login", json={"email": "  Analyst@Demo  ", "password": "pw123"})
+    r = c.post("/api/auth/login", json={"email": "  Analyst@Demo  ", "password": "pw123"})
     assert r.status_code == 200
     body = r.json()
     assert body["email"] == "analyst@demo"
@@ -412,7 +429,7 @@ def test_login_normalizes_email_for_token_subject(monkeypatch):
 def test_chat_rejects_conversation_id_containing_colon(monkeypatch):
     c = _client(monkeypatch)
     tok = _token(c)["token"]
-    r = c.post("/chat", json={"question": "hi", "conversation_id": "evil:conv"},
+    r = c.post("/api/chat", json={"question": "hi", "conversation_id": "evil:conv"},
                headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 400
 
@@ -453,14 +470,14 @@ def test_app_shutdown_closes_mcp_executor(monkeypatch):
 
 def test_feedback_requires_auth(monkeypatch):
     c = _client(monkeypatch)
-    r = c.post("/feedback", json={"request_id": "r", "conversation_id": None,
+    r = c.post("/api/feedback", json={"request_id": "r", "conversation_id": None,
                                    "rating": "up", "comment": None})
     assert r.status_code == 401
 
 
 def test_chat_garbage_token_is_401_not_500(monkeypatch):
     c = _client(monkeypatch)
-    r = c.post("/chat", json={"question": "hi"},
+    r = c.post("/api/chat", json={"question": "hi"},
                headers={"authorization": "Bearer not-a-real-token"})
     assert r.status_code == 401
 
@@ -471,7 +488,7 @@ def test_chat_expired_token_is_401_not_500(monkeypatch):
     expired = pyjwt.encode(
         {"sub": "analyst@demo", "role": "analyst", "exp": datetime.now(UTC) - timedelta(hours=1)},
         s.jwt_secret, algorithm="HS256")
-    r = c.post("/chat", json={"question": "hi"},
+    r = c.post("/api/chat", json={"question": "hi"},
                headers={"authorization": f"Bearer {expired}"})
     assert r.status_code == 401
 
@@ -484,7 +501,7 @@ def test_chat_returns_200_even_when_request_log_writer_is_down(monkeypatch):
     c = _client(monkeypatch)
     app.state.sf_writer = DeadWriter()
     tok = _token(c)["token"]
-    r = c.post("/chat", json={"question": "Which models?"},
+    r = c.post("/api/chat", json={"question": "Which models?"},
                headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 200
 
@@ -492,7 +509,7 @@ def test_chat_returns_200_even_when_request_log_writer_is_down(monkeypatch):
 def test_chat_empty_question_400(monkeypatch):
     c = _client(monkeypatch)
     tok = _token(c)["token"]
-    r = c.post("/chat", json={"question": "  "},
+    r = c.post("/api/chat", json={"question": "  "},
                headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 400
 
@@ -507,7 +524,7 @@ def test_feedback_token_without_role_claim_is_401_not_500(monkeypatch):
     c = _client(monkeypatch)
     s = auth.get_settings()
     bad = pyjwt.encode({"sub": "analyst@demo"}, s.jwt_secret, algorithm="HS256")  # no "role"
-    r = c.post("/feedback",
+    r = c.post("/api/feedback",
                json={"request_id": "rid", "conversation_id": "c1", "rating": "up",
                      "comment": None},
                headers={"authorization": f"Bearer {bad}"})
@@ -544,7 +561,7 @@ def _logged_params(sql_fragment):
 def test_chat_logs_the_identity_scoped_conversation_id(monkeypatch):
     c = _client(monkeypatch)
     tok = _token(c)["token"]
-    c.post("/chat", json={"question": "Which models?", "conversation_id": "1"},
+    c.post("/api/chat", json={"question": "Which models?", "conversation_id": "1"},
            headers={"authorization": f"Bearer {tok}"})
     params = _logged_params("COPILOT.REQUEST_LOG")
     assert params, "no REQUEST_LOG insert recorded"
@@ -555,7 +572,7 @@ def test_two_users_sharing_a_conversation_id_are_distinguishable_in_the_log(monk
     c = _client(monkeypatch)
     for email in ("analyst@demo", "admin@demo"):
         tok = _token(c, email)["token"]
-        c.post("/chat", json={"question": "Which models?", "conversation_id": "1"},
+        c.post("/api/chat", json={"question": "Which models?", "conversation_id": "1"},
                headers={"authorization": f"Bearer {tok}"})
     logged = [p[1] for p in _logged_params("COPILOT.REQUEST_LOG")]
     assert logged[-2:] == ["analyst@demo:1", "admin@demo:1"]
@@ -564,7 +581,7 @@ def test_two_users_sharing_a_conversation_id_are_distinguishable_in_the_log(monk
 def test_chat_without_conversation_id_still_names_the_actor(monkeypatch):
     c = _client(monkeypatch)
     tok = _token(c)["token"]
-    c.post("/chat", json={"question": "Which models?"},
+    c.post("/api/chat", json={"question": "Which models?"},
            headers={"authorization": f"Bearer {tok}"})
     assert _logged_params("COPILOT.REQUEST_LOG")[-1][1] == "analyst@demo:"
 
@@ -572,7 +589,7 @@ def test_chat_without_conversation_id_still_names_the_actor(monkeypatch):
 def test_feedback_logs_the_identity_scoped_conversation_id(monkeypatch):
     c = _client(monkeypatch)
     tok = _token(c)["token"]
-    c.post("/feedback",
+    c.post("/api/feedback",
            json={"request_id": "rid", "conversation_id": "1", "rating": "down",
                  "comment": "wrong number"},
            headers={"authorization": f"Bearer {tok}"})
@@ -586,7 +603,7 @@ def test_feedback_logs_the_identity_scoped_conversation_id(monkeypatch):
 def test_feedback_insert_column_placeholder_and_param_counts_agree(monkeypatch):
     c = _client(monkeypatch)
     tok = _token(c)["token"]
-    c.post("/feedback",
+    c.post("/api/feedback",
            json={"request_id": "rid", "conversation_id": "c1", "rating": "up",
                  "comment": "nice"},
            headers={"authorization": f"Bearer {tok}"})
@@ -634,7 +651,7 @@ def test_chat_surfaces_the_retrieval_mode(monkeypatch, caplog):
     c = _client(monkeypatch)
     tok = _token(c)["token"]
     with caplog.at_level(logging.WARNING):
-        r = c.post("/chat", json={"question": "Which models?"},
+        r = c.post("/api/chat", json={"question": "Which models?"},
                    headers={"authorization": f"Bearer {tok}"})
     # FakeSnowflake raises on VECTOR_COSINE_SIMILARITY, so this is the fallback path.
     assert r.json()["retrieval_mode"] == "keyword"
