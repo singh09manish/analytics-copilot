@@ -46,6 +46,30 @@ resource "aws_iam_role" "ecs_task" {
   })
 }
 
+# ECS Exec: lets `aws ecs execute-command` attach to a running task for
+# debugging when it dies before writing anything useful to the log group.
+# The task role is otherwise deliberately empty of AWS permissions (the app
+# talks to Snowflake and Anthropic with its own credentials, not AWS's) --
+# this is a narrow, deliberate exception scoped to exactly the four actions
+# ECS Exec requires, none of which support resource-level restriction.
+resource "aws_iam_role_policy" "ecs_task_exec" {
+  name = "ecs-exec"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 # --- GitHub OIDC: short-lived credentials instead of stored access keys ---
 data "tls_certificate" "github" {
   url = "https://token.actions.githubusercontent.com/.well-known/openid-configuration"
