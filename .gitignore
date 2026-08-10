@@ -16,7 +16,8 @@ secrets/
 
 # Terraform
 infra/.terraform/
-infra/.terraform.lock.hcl
+# infra/.terraform.lock.hcl is intentionally tracked: it pins provider versions
+# (e.g. hashicorp/tls) so `terraform init` is reproducible across machines.
 terraform.tfstate
 terraform.tfstate.*
 *.tfvars

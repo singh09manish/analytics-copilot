@@ -52,9 +52,16 @@ data "tls_certificate" "github" {
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.github.certificates[0].sha1_fingerprint]
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+  # The root CA is the last entry in the chain, not the first -- certificate
+  # ordering has changed across tls provider major versions, and this value feeds
+  # an IAM trust, so select by position rather than assuming index 0.
+  thumbprint_list = [
+    data.tls_certificate.github.certificates[
+      length(data.tls_certificate.github.certificates) - 1
+    ].sha1_fingerprint
+  ]
 }
 
 resource "aws_iam_role" "github_deploy" {
@@ -66,11 +73,17 @@ resource "aws_iam_role" "github_deploy" {
       Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
-        StringEquals = { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" }
-        # Only this repo, and only from a branch -- a fork's pull_request workflow
-        # runs with a different sub and cannot assume this role.
-        StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/*"
+        # Only this repo, and only from main -- a fork's pull_request workflow runs
+        # with a different sub and cannot assume this role, and a wildcard branch
+        # match would let any pushed branch with an `id-token: write` workflow mint
+        # deploy credentials even though the deploy workflow only fires on
+        # push-to-main and workflow_dispatch. NOTE: adding an `environment:` to the
+        # deploy job changes the subject claim to
+        # repo:${var.github_repo}:environment:<name> and would break this assume --
+        # update the condition to match if that's ever introduced.
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main"
         }
       }
     }]
@@ -98,9 +111,12 @@ resource "aws_iam_role_policy" "github_deploy" {
         Resource = [aws_ecr_repository.app.arn]
       },
       {
+        # Scoped to this one service -- `aws ecs wait services-stable` (called by
+        # the deploy pipeline after UpdateService) only needs DescribeServices on
+        # this service, so scoping does not break the pipeline.
         Effect   = "Allow"
         Action   = ["ecs:UpdateService", "ecs:DescribeServices"]
-        Resource = "*"
+        Resource = [aws_ecs_service.app.id]
       },
       {
         Effect   = "Allow"

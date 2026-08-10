@@ -18,6 +18,14 @@ variable "image_tag" {
 variable "github_repo" {
   description = "owner/name of the GitHub repo allowed to assume the deploy role via OIDC."
   type        = string
+
+  # This value feeds directly into an IAM trust policy condition. A typo produces a
+  # role nothing can assume (debuggable only via CloudTrail); a stray "*" would
+  # widen the trust to repos it shouldn't cover.
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$", var.github_repo))
+    error_message = "github_repo must be of the form \"owner/name\" (e.g. \"singh09manish/analytics-copilot\")."
+  }
 }
 
 variable "app_model" {
