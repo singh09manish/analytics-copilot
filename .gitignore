@@ -13,3 +13,12 @@ warehouse/dbt/dbt_packages/
 warehouse/dbt/logs/
 warehouse/dbt/.user.yml
 secrets/
+
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.*
+*.tfvars
+!infra/terraform.tfvars.example
+crash.log
