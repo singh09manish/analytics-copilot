@@ -21,5 +21,6 @@ export interface Message {
   text: string;
   data?: ChatResponse;
   feedback?: "up" | "down";
+  feedbackPending?: boolean;
   error?: boolean;
 }

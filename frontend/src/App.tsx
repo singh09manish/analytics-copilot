@@ -5,13 +5,39 @@ import Login from "./Login";
 import type { Message } from "./types";
 import "./App.css";
 
+// crypto.randomUUID() only works in a secure context (HTTPS, or localhost).
+// Phase 3 deploys this app to AWS, where an origin could plausibly be served
+// non-securely; falling back here means a misconfigured host degrades to a
+// manually-built UUID instead of throwing at component-evaluation time and
+// white-screening the whole app.
+function newConversationId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  const bytes = typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function"
+    ? crypto.getRandomValues(new Uint8Array(16))
+    : Uint8Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10xx
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export default function App() {
   const [authState, setAuthState] = useState<AuthState | null>(getAuth());
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
-  const conversationId = useRef<string>(crypto.randomUUID());
+  // Lazy ref init (react.dev-recommended pattern): only the first render's
+  // assignment sticks, so this generates exactly one id per session.
+  const conversationId = useRef<string | null>(null);
+  if (conversationId.current === null) conversationId.current = newConversationId();
+  // Guards against a fast double-click sending two /feedback POSTs for the
+  // same message: unlike Message.feedback (React state, only settles after
+  // the request resolves), this ref is set synchronously the instant the
+  // first click starts, so a second click in the same tick sees it immediately.
+  const pendingFeedback = useRef<Set<number>>(new Set());
 
   if (!authState) return <Login onLogin={setAuthState} />;
 
@@ -19,7 +45,7 @@ export default function App() {
     clearAuth();
     setAuthState(null);
     setMessages([]);
-    conversationId.current = crypto.randomUUID();
+    conversationId.current = newConversationId();
   }
 
   async function submit(e: React.FormEvent) {
@@ -46,16 +72,22 @@ export default function App() {
 
   async function giveFeedback(i: number, rating: "up" | "down") {
     const m = messages[i];
-    if (!m.data?.request_id || m.feedback) return;
+    if (!m.data?.request_id || m.feedback || pendingFeedback.current.has(i)) return;
+    pendingFeedback.current.add(i);
+    setMessages((ms) => ms.map((msg, idx) => (idx === i ? { ...msg, feedbackPending: true } : msg)));
     const comment = rating === "down"
       ? window.prompt("What was wrong? (optional)") ?? undefined
       : undefined;
     try {
       await sendFeedback(m.data.request_id, conversationId.current, rating, comment);
       setMessages((ms) => ms.map((msg, idx) =>
-        idx === i ? { ...msg, feedback: rating } : msg));
+        idx === i ? { ...msg, feedback: rating, feedbackPending: false } : msg));
     } catch {
-      /* feedback is best-effort */
+      /* feedback is best-effort; clear the pending flag so a retry is possible */
+      setMessages((ms) => ms.map((msg, idx) =>
+        idx === i ? { ...msg, feedbackPending: false } : msg));
+    } finally {
+      pendingFeedback.current.delete(i);
     }
   }
 
@@ -111,8 +143,8 @@ export default function App() {
                 {m.feedback
                   ? <span className="fb-done">feedback: {m.feedback === "up" ? "👍" : "👎"}</span>
                   : <>
-                      <button onClick={() => giveFeedback(i, "up")}>👍</button>
-                      <button onClick={() => giveFeedback(i, "down")}>👎</button>
+                      <button disabled={m.feedbackPending} onClick={() => giveFeedback(i, "up")}>👍</button>
+                      <button disabled={m.feedbackPending} onClick={() => giveFeedback(i, "down")}>👎</button>
                     </>}
               </div>
             )}
