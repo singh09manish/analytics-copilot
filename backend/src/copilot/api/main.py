@@ -53,8 +53,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Analytics Copilot", lifespan=lifespan)
+
+
+def _cors_origins() -> list[str]:
+    from copilot.config import get_settings
+
+    return get_settings().cors_origin_list()
+
+
 app.add_middleware(
-    CORSMiddleware, allow_origins=["http://localhost:5173"],
+    CORSMiddleware, allow_origins=_cors_origins(),
     allow_methods=["*"], allow_headers=["*"],
 )
 

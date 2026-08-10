@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     demo_analyst_password_hash: str = ""
     demo_admin_password_hash: str = ""
     use_mcp: bool = True
+    # Container deployments have no key file on disk; the PEM arrives from Secrets
+    # Manager as an env var. Empty means "use snowflake_private_key_path" (local dev).
+    snowflake_private_key_pem: str = ""
+    # Comma-separated. Same-origin behind CloudFront makes this moot in AWS, but it
+    # stays configurable so a split-origin deployment does not need a code change.
+    cors_allow_origins: str = "http://localhost:5173"
+    aws_region: str = "us-east-1"
+
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
 
 
 @lru_cache
