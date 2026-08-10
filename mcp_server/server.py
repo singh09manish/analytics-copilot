@@ -10,16 +10,13 @@ from typing import Annotated
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "backend" / "src"))
 
-import sqlglot
-
 # NOTE: the installed `mcp` package (2.0.0) renamed `mcp.server.fastmcp.FastMCP`
 # to `mcp.server.mcpserver.MCPServer`; the decorator/run API is unchanged, so we
 # alias it back to the familiar name.
 from mcp.server.mcpserver import MCPServer as FastMCP
 from pydantic import Field
-from sqlglot import expressions as exp
 
-from copilot.sql_guard import SqlGuardError, validate
+from copilot.sql_guard import SqlGuardError, deny_side_effects, validate
 
 mcp = FastMCP("analytics-copilot-snowflake")
 
@@ -85,23 +82,16 @@ def _sf(role: str = "COPILOT_APP_RO"):
 def _deny_side_effects(sql: str) -> None:
     """Reject side-effecting/metadata scalar functions (GET_DDL, SYSTEM$...).
 
-    Walks the PARSED tree of `sql` -- which must already be the guard-normalized
-    output of sql_guard.validate(), not raw user input -- rather than regexing raw
-    text. A regex over raw text is bypassable: sqlglot relocates comments (e.g.
-    `GET_DDL/*x*/(...)` or `GET_DDL -- x\\n(...)`) when it re-serializes the guard's
-    output, and it resolves double-quoted identifiers like `"GET_DDL"(...)` to the
-    same builtin Snowflake would call -- both defeat a raw-text regex while still
-    reaching Snowflake as a call to the denied function. Parsing catches all three
-    forms because they all produce an exp.Anonymous/exp.Func node named GET_DDL,
-    and it can't be fooled by a string literal that merely contains the text
-    "GET_DDL(" (that parses to exp.Literal, not a function call).
+    The AST-walking implementation lives in copilot.sql_guard so layer 1 and layer 2
+    enforce the identical rule from one piece of code (sql_guard.validate() runs it
+    inline). Re-running it here is deliberate defense in depth: this server is a
+    stdio tool server and will re-validate SQL handed to it by any MCP client,
+    including ones that never went through the app's layer 1.
     """
-    tree = sqlglot.parse_one(sql, read="snowflake")
-    for node in tree.walk():
-        if isinstance(node, (exp.Anonymous, exp.Func)):
-            name = (node.name or "").upper()
-            if name == "GET_DDL" or name.startswith("SYSTEM$"):
-                raise ValueError("side-effecting or metadata functions are not allowed")
+    try:
+        deny_side_effects(sql)
+    except SqlGuardError as e:
+        raise ValueError(e.reason) from e
 
 
 def _run_query_impl(sql: str, sf) -> dict:
@@ -123,7 +113,7 @@ def _describe_table_impl(table_name: str, sf) -> str:
 
 @mcp.tool()
 def run_query(sql: str, role: str = "COPILOT_APP_RO") -> dict:
-    """Execute one read-only SELECT against GOLD/COPILOT. Validated server-side.
+    """Execute one read-only SELECT against the GOLD schema. Validated server-side.
 
     `role` selects which Snowflake role/session runs the query (COPILOT_APP_RO or
     COPILOT_ADMIN only -- anything else is rejected) so masking policies that CASE

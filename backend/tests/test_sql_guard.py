@@ -100,3 +100,70 @@ def test_nested_cte_bare_reference_rejected():
 def test_bare_udtf_as_table_rejected(bad):
     with pytest.raises(SqlGuardError):
         validate(bad)
+
+
+# --- Final review, Critical finding C1: the COPILOT schema holds REQUEST_LOG (every
+# user's raw question, intent, generated SQL and role) and FEEDBACK (free-text
+# comments), and COPILOT_APP_RO could read them. Layer 1 must not let LLM-generated
+# SQL name that schema at all -- nothing in the LLM path needs it (retrieval and the
+# MCP metadata tools use app-authored SQL that never reaches validate()).
+
+
+@pytest.mark.parametrize("bad", [
+    "SELECT question, user_role, conversation_id FROM COPILOT.REQUEST_LOG",
+    "SELECT * FROM MEDTECH_ANALYTICS.COPILOT.REQUEST_LOG",
+    "SELECT comment, rating FROM MEDTECH_ANALYTICS.COPILOT.FEEDBACK",
+    "SELECT * FROM COPILOT.EVAL_RESULTS",
+    "SELECT * FROM COPILOT.SCHEMA_CARDS",
+    'SELECT * FROM "COPILOT"."REQUEST_LOG"',
+    ("SELECT m.model FROM GOLD.DIM_MACHINE m "
+     "JOIN COPILOT.REQUEST_LOG r ON r.request_id = m.machine_id"),
+    ("WITH leaked AS (SELECT question FROM MEDTECH_ANALYTICS.COPILOT.REQUEST_LOG) "
+     "SELECT * FROM leaked"),
+])
+def test_copilot_schema_rejected(bad):
+    with pytest.raises(SqlGuardError, match="schema"):
+        validate(bad)
+
+
+def test_gold_is_the_only_allowed_schema():
+    from copilot.sql_guard import ALLOWED_SCHEMAS
+
+    assert ALLOWED_SCHEMAS == {"GOLD"}
+
+
+# --- Final review, Important finding I2: the side-effect denylist lived only in the
+# MCP server, so it vanished whenever the executor was unavailable or USE_MCP=false.
+# It now runs in layer 1 too, on the parsed tree, so obfuscated spellings that defeat
+# a raw-text regex are still caught.
+
+
+@pytest.mark.parametrize("bad", [
+    "SELECT GET_DDL('view', 'GOLD.DIM_TREATMENT_CENTER') AS d",
+    "SELECT GET_DDL/*x*/('TABLE','GOLD.DIM_MACHINE')",
+    "SELECT GET_DDL -- x\n('TABLE','GOLD.DIM_MACHINE')",
+    'SELECT "GET_DDL"(\'TABLE\',\'GOLD.DIM_MACHINE\')',
+    "SELECT SYSTEM$CANCEL_ALL_QUERIES() AS x",
+    "SELECT SYSTEM$WAIT(600, 'SECONDS') AS x",
+    "SELECT model FROM GOLD.DIM_MACHINE WHERE SYSTEM$WAIT(600, 'SECONDS') IS NOT NULL",
+])
+def test_side_effecting_functions_rejected_at_layer1(bad):
+    with pytest.raises(SqlGuardError, match="side-effect"):
+        validate(bad)
+
+
+def test_string_literal_naming_a_denied_function_is_not_a_call():
+    """A literal that merely contains the text must not trip the denylist -- the
+    check walks the parsed tree, so this is exp.Literal, not a function call."""
+    assert "LIMIT 1000" in validate(
+        "SELECT model FROM GOLD.DIM_MACHINE WHERE model = 'GET_DDL(x)'")
+
+
+def test_deny_side_effects_shares_layer1_implementation():
+    """Layer 2 (mcp_server) calls this helper rather than owning a second copy of
+    the rule, so the two layers cannot drift apart."""
+    from copilot.sql_guard import deny_side_effects
+
+    deny_side_effects("SELECT model FROM GOLD.DIM_MACHINE LIMIT 1000")  # must not raise
+    with pytest.raises(SqlGuardError, match="side-effect"):
+        deny_side_effects("SELECT SYSTEM$CANCEL_ALL_QUERIES()")

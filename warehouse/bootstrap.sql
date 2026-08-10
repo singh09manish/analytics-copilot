@@ -4,6 +4,13 @@ USE ROLE ACCOUNTADMIN;
 CREATE WAREHOUSE IF NOT EXISTS COPILOT_WH
   WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE;
 
+-- Cap runaway LLM-generated queries. Without this the account default applies
+-- (172800s = 48h): the app gives up on a query after 60s and the repair loop
+-- immediately launches another, while the abandoned one keeps burning credits for
+-- up to two days. 60s matches the client-side timeout in backend mcp_client._run.
+-- Safe to re-run (SET is idempotent).
+ALTER WAREHOUSE COPILOT_WH SET STATEMENT_TIMEOUT_IN_SECONDS = 60;
+
 CREATE DATABASE IF NOT EXISTS MEDTECH_ANALYTICS;
 CREATE SCHEMA IF NOT EXISTS MEDTECH_ANALYTICS.BRONZE;
 CREATE SCHEMA IF NOT EXISTS MEDTECH_ANALYTICS.SILVER;
@@ -23,7 +30,7 @@ GRANT USAGE ON WAREHOUSE COPILOT_WH TO ROLE COPILOT_ADMIN;
 GRANT ALL ON DATABASE MEDTECH_ANALYTICS TO ROLE COPILOT_ADMIN;
 GRANT ALL ON ALL SCHEMAS IN DATABASE MEDTECH_ANALYTICS TO ROLE COPILOT_ADMIN;
 
--- Read-only surface for the app: GOLD + COPILOT only (no bronze/silver)
+-- Read-only surface for the app: all of GOLD, plus exactly two COPILOT tables
 GRANT USAGE ON DATABASE MEDTECH_ANALYTICS TO ROLE COPILOT_APP_RO;
 GRANT USAGE ON SCHEMA MEDTECH_ANALYTICS.GOLD TO ROLE COPILOT_APP_RO;
 GRANT USAGE ON SCHEMA MEDTECH_ANALYTICS.COPILOT TO ROLE COPILOT_APP_RO;
@@ -31,8 +38,31 @@ GRANT SELECT ON ALL TABLES IN SCHEMA MEDTECH_ANALYTICS.GOLD TO ROLE COPILOT_APP_
 GRANT SELECT ON FUTURE TABLES IN SCHEMA MEDTECH_ANALYTICS.GOLD TO ROLE COPILOT_APP_RO;
 GRANT SELECT ON ALL VIEWS IN SCHEMA MEDTECH_ANALYTICS.GOLD TO ROLE COPILOT_APP_RO;
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA MEDTECH_ANALYTICS.GOLD TO ROLE COPILOT_APP_RO;
-GRANT SELECT ON ALL TABLES IN SCHEMA MEDTECH_ANALYTICS.COPILOT TO ROLE COPILOT_APP_RO;
-GRANT SELECT ON FUTURE TABLES IN SCHEMA MEDTECH_ANALYTICS.COPILOT TO ROLE COPILOT_APP_RO;
+
+-- The COPILOT schema holds BOTH the AI data library the app reads (SCHEMA_CARDS,
+-- GLOSSARY) and the operational tables it writes (REQUEST_LOG = every user's raw
+-- question + generated SQL + role, FEEDBACK = free-text comments, EVAL_RESULTS).
+-- A schema-wide `SELECT ON ALL/FUTURE TABLES` grant here therefore let COPILOT_APP_RO
+-- -- i.e. every analyst -- read every other user's logged questions and comments.
+-- Layer 3 must not depend on layer 1's schema allowlist to close that, so the grant
+-- is per-table on the two tables the app actually reads. The REVOKEs undo the old
+-- schema-wide grants on an account bootstrapped before this change; they are no-ops
+-- on a fresh account.
+REVOKE SELECT ON ALL TABLES IN SCHEMA MEDTECH_ANALYTICS.COPILOT FROM ROLE COPILOT_APP_RO;
+REVOKE SELECT ON FUTURE TABLES IN SCHEMA MEDTECH_ANALYTICS.COPILOT FROM ROLE COPILOT_APP_RO;
+
+-- Created here (empty) so the per-table grants below can be issued on a fresh
+-- account before `make ai-library` populates them. Column lists must stay in sync
+-- with warehouse/load_ai_library.py, which re-creates these tables WITH COPY GRANTS
+-- so re-loading the library does not silently drop the grants.
+CREATE TABLE IF NOT EXISTS MEDTECH_ANALYTICS.COPILOT.GLOSSARY (
+  term VARCHAR, definition VARCHAR, related_tables VARCHAR, embedding VECTOR(FLOAT, 768)
+);
+CREATE TABLE IF NOT EXISTS MEDTECH_ANALYTICS.COPILOT.SCHEMA_CARDS (
+  table_name VARCHAR, card VARCHAR, embedding VECTOR(FLOAT, 768)
+);
+GRANT SELECT ON TABLE MEDTECH_ANALYTICS.COPILOT.SCHEMA_CARDS TO ROLE COPILOT_APP_RO;
+GRANT SELECT ON TABLE MEDTECH_ANALYTICS.COPILOT.GLOSSARY TO ROLE COPILOT_APP_RO;
 
 -- Writer: append-only operational tables
 GRANT USAGE ON DATABASE MEDTECH_ANALYTICS TO ROLE COPILOT_APP_WRITER;

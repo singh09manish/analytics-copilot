@@ -13,13 +13,17 @@ EMBED = "SNOWFLAKE.CORTEX.EMBED_TEXT_768('snowflake-arctic-embed-m-v1.5', %s)"
 
 def main() -> None:
     sf = SnowflakeClient(role="COPILOT_ADMIN")
+    # COPY GRANTS: COPILOT_APP_RO holds a PER-TABLE select grant on these two (see
+    # warehouse/bootstrap.sql -- the schema-wide COPILOT grant was removed because it
+    # also exposed REQUEST_LOG/FEEDBACK). Without COPY GRANTS, re-running this loader
+    # would drop those grants and break retrieval for every analyst.
     sf.execute_many([
         (
-            "CREATE OR REPLACE TABLE MEDTECH_ANALYTICS.COPILOT.GLOSSARY ("
+            "CREATE OR REPLACE TABLE MEDTECH_ANALYTICS.COPILOT.GLOSSARY COPY GRANTS ("
             "term VARCHAR, definition VARCHAR, related_tables VARCHAR, embedding VECTOR(FLOAT, 768))"
         ),
         (
-            "CREATE OR REPLACE TABLE MEDTECH_ANALYTICS.COPILOT.SCHEMA_CARDS ("
+            "CREATE OR REPLACE TABLE MEDTECH_ANALYTICS.COPILOT.SCHEMA_CARDS COPY GRANTS ("
             "table_name VARCHAR, card VARCHAR, embedding VECTOR(FLOAT, 768))"
         ),
     ])
