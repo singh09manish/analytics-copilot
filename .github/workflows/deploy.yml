@@ -109,11 +109,19 @@ jobs:
           # the pipeline would happily publish the SPA against a backend that
           # never actually changed. Confirm the PRIMARY deployment is still the
           # one just created, and that it reached COMPLETED, or fail loudly.
-          read -r now state < <(aws ecs describe-services \
-            --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-            --query 'services[0].deployments[?status==`PRIMARY`]|[0].[id,rolloutState]' --output text)
+          # rolloutState lags the waiter: services-stable returned on the first
+          # real deploy while state was still IN_PROGRESS, and it flipped to
+          # COMPLETED seconds later -- so reading it once turned a healthy deploy
+          # into a red build. Poll to a terminal state instead of sampling.
+          for _ in $(seq 1 30); do
+            read -r now state < <(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query 'services[0].deployments[?status==`PRIMARY`]|[0].[id,rolloutState]' --output text)
+            [ "$state" = "IN_PROGRESS" ] || break
+            sleep 10
+          done
           if [ "$dep" != "$now" ] || [ "$state" != "COMPLETED" ]; then
-            echo "::error::ECS rollout did not complete cleanly (deployment $dep -> $now, rolloutState=$state) -- likely a circuit-breaker rollback"
+            echo "::error::ECS rollout did not complete cleanly (deployment $dep -> $now, rolloutState=$state) -- a circuit-breaker rollback, or still IN_PROGRESS after 5 minutes"
             exit 1
           fi
 
