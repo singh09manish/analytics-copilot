@@ -572,6 +572,37 @@ API origin case and cannot drift the way a custom policy can. This is exactly wh
 plan sequenced a real `terraform apply` as its own task before the `v0.3-aws` tag, rather
 than treating a clean `validate` as sufficient signoff on the infra code.
 
+A third issue surfaced the same way, one step later: after both fixes above, `make
+aws-secret` pushed the real secret values, and the documented cleanup step —
+`terraform state rm aws_secretsmanager_secret_version.placeholder` — was run to stop
+Terraform tracking the now-superseded placeholder version (see the removed comment this
+replaces, previously in `infra/secrets.tf`). A follow-up `terraform plan`, run purely as a
+verification step, showed `aws_secretsmanager_secret_version.placeholder will be created`
+— `state rm` does not remove a resource's *declaration*, only Terraform's state pointer to
+it, so with the block still present in `secrets.tf`, the very next `terraform apply` (by
+anyone, for any reason — an unrelated infra change, or `make aws-up` re-run for routine
+idempotency) would have recreated it with the hardcoded `"unset"` JSON and made it
+`AWSCURRENT`, overwriting the live secret. That plan was never applied. The actual fix,
+once `make aws-secret` has run at least once, is to delete the
+`aws_secretsmanager_secret_version` resource from Terraform entirely rather than manage
+its lifecycle at all — Terraform was never supposed to own this secret's contents (see
+"Secrets in Secrets Manager, injected by the ECS agent" above), and the placeholder was
+only ever there to give the ECS task definition something to reference before
+`aws_bootstrap_secret.py` existed. `infra/secrets.tf` now has no
+`aws_secretsmanager_secret_version` resource at all; a comment in its place documents why,
+what populates the secret instead (`make aws-secret`, which must run before the first
+deploy on a fresh account), and what happens if that step is skipped — the ECS task fails
+to resolve its `secrets` block at container start and never comes up, a loud failure
+rather than a silent or insecure one. `terraform plan` after the removal reported `No
+changes. Your infrastructure matches the configuration.`, confirming there is no longer
+any create/recreate hazard here.
+
+This general pattern — `validate` and even a clean `plan` both agreeing a resource is fine
+right up until state and configuration disagree about whether it still exists — is worth
+remembering beyond this one secret: any resource with `lifecycle { ignore_changes }` used
+to protect a value Terraform doesn't really own is a candidate for the same failure mode,
+and the fix is usually to stop declaring the resource, not to keep patching around it.
+
 ---
 
 ## 12. Process

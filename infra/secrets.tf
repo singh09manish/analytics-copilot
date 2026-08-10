@@ -4,29 +4,30 @@ resource "aws_secretsmanager_secret" "app" {
   recovery_window_in_days = 0 # demo: allow immediate recreate after destroy
 }
 
-# Placeholder so the ECS task definition can reference specific JSON keys before the
-# operator has pushed real values. aws_bootstrap_secret.py overwrites this wholesale.
-resource "aws_secretsmanager_secret_version" "placeholder" {
-  secret_id = aws_secretsmanager_secret.app.id
-  secret_string = jsonencode({
-    ANTHROPIC_API_KEY          = "unset"
-    JWT_SECRET                 = "unset"
-    DEMO_ANALYST_PASSWORD_HASH = "unset"
-    DEMO_ADMIN_PASSWORD_HASH   = "unset"
-    SNOWFLAKE_ACCOUNT          = "unset"
-    SNOWFLAKE_PRIVATE_KEY_PEM  = "unset"
-  })
-
-  lifecycle {
-    ignore_changes = [secret_string] # the operator's real values must not be reverted
-  }
-
-  # ignore_changes only suppresses in-place updates -- it does not stop Terraform
-  # from recreating this resource if the tracked version is garbage-collected after
-  # a couple of credential rotations, which would restore the "unset" placeholder.
-  # Blast radius is limited (the app's JWT length gate crash-loops on "unset"
-  # rather than running insecurely) but is still an outage. After the first
-  # successful run of aws_bootstrap_secret.py, the operator should run
-  # `terraform state rm aws_secretsmanager_secret_version.placeholder` so
-  # Terraform stops tracking this resource entirely.
-}
+# Deliberately no aws_secretsmanager_secret_version resource here. Terraform must
+# never own this secret's contents -- the original constraint, and it still holds --
+# because any value it manages lands in plan output and state in plaintext. An
+# earlier revision of this file worked around that by having Terraform create a
+# "placeholder" version with "unset" values (so the ECS task definition below had
+# something to reference), on the theory that aws_bootstrap_secret.py would
+# overwrite it out-of-band and ignore_changes would stop Terraform reverting that.
+# It didn't hold: ignore_changes only suppresses in-place updates on a version
+# Terraform still tracks in state. The very first `terraform apply` after the
+# operator ran `terraform state rm` on it (the then-documented fix for the
+# placeholder being garbage-collected after a few rotations) would notice the
+# declared resource missing from state and recreate it -- wiping the real,
+# already-live secret back to "unset" as AWSCURRENT. Removing the resource
+# entirely removes that footgun instead of documenting around it.
+#
+# `scripts/aws_bootstrap_secret.py` (invoked by `make aws-secret`) is what actually
+# creates the secret's first version, straight from `.env` via `aws secretsmanager
+# put-secret-value` -- outside Terraform entirely, so no value it pushes ever
+# reaches Terraform state. It must run once after the first `terraform apply` on a
+# fresh account, before the first deploy.
+#
+# If it's skipped: aws_secretsmanager_secret.app exists but has zero versions, so
+# the ECS task's `secrets` block (below) fails to resolve at container start and
+# the task never comes up. That's a loud, visible failure -- not a silent one, and
+# not an insecure one (there is no "unset" value for the JWT gate to crash-loop on
+# or, worse, quietly accept) -- so it surfaces immediately as a failed deployment
+# rather than as a security hole discovered later.
