@@ -81,17 +81,35 @@ that verification is pending.
 
 ## Deploying to AWS
 
-The one-command path from an empty AWS account to a live URL:
+The path from an empty AWS account to a live URL:
 
 ```bash
 cp infra/terraform.tfvars.example infra/terraform.tfvars   # edit github_repo first
 make aws-up                                                 # terraform apply; prints app_url
+
+# Wire the deploy pipeline to what apply just created -- deploy.yml reads these four
+# repo variables, and it fails at the first step on a fresh repo without them.
+gh variable set AWS_DEPLOY_ROLE_ARN --body "$(terraform -chdir=infra output -raw github_deploy_role_arn)"
+gh variable set WEB_BUCKET --body "$(terraform -chdir=infra output -raw web_bucket)"
+gh variable set CLOUDFRONT_DISTRIBUTION_ID --body "$(terraform -chdir=infra output -raw cloudfront_distribution_id)"
+gh variable set APP_URL --body "$(terraform -chdir=infra output -raw app_url)"   # read by the post-deploy smoke step
+
 make aws-secret                                              # pushes .env + the Snowflake key into Secrets Manager
 git push                                                      # deploy.yml builds the image and rolls the service
 ```
 
-`make aws-down` tears the whole stack back down (`terraform destroy`, buckets and the
-ECR repo are `force_destroy`d so nothing stalls on leftover objects).
+`make aws-down` tears the whole stack back down (`terraform destroy`; the S3 bucket and
+the ECR repo are `force_destroy`d so nothing stalls on leftover objects). Two things
+about it are easy to miss:
+
+- It deletes `aws_iam_openid_connect_provider.github`, the GitHub Actions OIDC
+  provider — that resource is an **account-level singleton**, shared with any other
+  Terraform stack in this AWS account that also authenticates via GitHub OIDC. Tearing
+  this stack down tears that down too.
+- The secret's `recovery_window_in_days = 0` means it is deleted immediately, with no
+  recovery window. `make aws-secret` must be run again after every `make aws-up` that
+  follows a `make aws-down` — the new secret starts with no version at all (see
+  `infra/secrets.tf`), and the ECS task will fail to start until it does.
 
 ### Architecture decisions
 

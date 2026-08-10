@@ -503,6 +503,26 @@ IP is not an entry point. A deliberate cost trade, stated rather than hidden.
 Terraform creates the secret container but never its contents — the values are pushed by a
 separate script — so no secret value ever lands in Terraform state.
 
+### Where "identifier" ends and "credential" begins, for this app's Snowflake values
+**Found in the Task 8 review.** `scripts/aws_bootstrap_secret.py` treats `SNOWFLAKE_ACCOUNT`
+as one of the six keys it pushes into Secrets Manager, alongside real credentials
+(`ANTHROPIC_API_KEY`, `JWT_SECRET`, both password hashes, the Snowflake private-key PEM).
+But `docs/PENDING-ACTIONS.md` had the live account identifier committed in plain text —
+`git log -S` confirms it predates Phase 3A entirely, so nothing in this task introduced
+it, but the two treatments disagreed with each other and that's worth resolving rather
+than leaving as an inconsistency. The account identifier (`KETNSVS-VM01655`-shaped:
+`<locator>.<region>`) is genuinely low-sensitivity — it names *which* Snowflake account to
+connect to, the same way a hostname does, and getting in requires the private key, which
+authenticates via key-pair auth and is never valid on its own. It has been redacted from
+`docs/PENDING-ACTIONS.md` (referencing `.env` instead) so the two treatments agree, but
+the redaction is about consistency, not a claim that the identifier was ever a meaningful
+leak on its own. The line, going forward: the account identifier is routing information
+(closer to a hostname or a repo name than a secret); the private key and the Anthropic API
+key are credentials, full stop, and are the only two of the six bootstrap keys whose
+disclosure alone grants access to something. The other three (`JWT_SECRET`, both bcrypt
+hashes) sit in between — not identifiers, but not usable without also compromising this
+app's own auth flow — and are treated as credentials because that's the safer default.
+
 ### Terraform state is local
 An S3 and DynamoDB backend is the production answer and worth saying out loud, but
 provisioning it is a second bootstrap problem for a single operator. State files are

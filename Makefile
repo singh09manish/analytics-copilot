@@ -71,8 +71,10 @@ aws-secret:
 	$(UV) run python ../scripts/aws_bootstrap_secret.py
 
 aws-smoke:
-	@test -n "$(ANALYST_PW)" || (echo "usage: make aws-smoke ANALYST_PW=... ADMIN_PW=..." && exit 1)
-	$(UV) run python ../scripts/aws_smoke.py "$$($(TF) output -raw app_url)" "$(ANALYST_PW)" "$(ADMIN_PW)"
+	@test -n "$(ANALYST_PW)" && test -n "$(ADMIN_PW)" || \
+		(echo "usage: make aws-smoke ANALYST_PW=... ADMIN_PW=..." && exit 1)
+	@$(UV) run python ../scripts/aws_smoke.py "$$($(TF) output -raw app_url)" "$(ANALYST_PW)" "$(ADMIN_PW)"
 
 aws-down:
+	$(TF) init -input=false
 	$(TF) destroy -auto-approve

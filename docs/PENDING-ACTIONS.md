@@ -43,8 +43,10 @@ print(SnowflakeClient(role='COPILOT_ADMIN').run_query(
 
 ## Done
 
-- **Snowflake account reactivated** — same account (`KETNSVS-VM01655`), data intact
-  (146,000 utilization rows, 12 glossary terms, 6 schema cards, embeddings all present).
+- **Snowflake account reactivated** — same account (identifier in `.env`, not
+  repeated here — see `docs/DECISIONS.md`, "AWS deployment" section, for where the
+  line between identifier and credential sits), data intact (146,000 utilization
+  rows, 12 glossary terms, 6 schema cards, embeddings all present).
 - **`.env` complete** — `JWT_SECRET` (58 chars, not the default) and both bcrypt password hashes set;
   the API's startup gate passes.
 - **Snowsight re-grants applied and verified** — statement timeout is 60s; analyst is blocked from
