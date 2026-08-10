@@ -41,20 +41,18 @@ resource "aws_s3_bucket_policy" "web" {
 }
 
 # API responses must never be cached, and the Authorization header has to survive
-# the hop to the ALB -- CloudFront strips it by default.
-resource "aws_cloudfront_cache_policy" "api" {
-  name        = "${local.name}-api-nocache"
-  min_ttl     = 0
-  default_ttl = 0
-  max_ttl     = 0
-
-  parameters_in_cache_key_and_forwarded_to_origin {
-    enable_accept_encoding_gzip   = true
-    enable_accept_encoding_brotli = true
-    cookies_config { cookie_behavior = "none" }
-    headers_config { header_behavior = "none" }
-    query_strings_config { query_string_behavior = "none" }
-  }
+# the hop to the ALB -- CloudFront strips it by default. A custom all-zero-TTL
+# policy can't also set enable_accept_encoding_gzip/brotli -- CloudFront's API
+# rejects those parameters once a policy's TTLs mean caching is disabled, because
+# there is no cache key left for them to vary (confirmed against the live API:
+# CreateCachePolicy 400s with "The parameter EnableAcceptEncodingGzip is invalid
+# for policy with caching disabled"). AWS's managed CachingDisabled policy
+# (verified via `aws cloudfront list-cache-policies --type managed`, id
+# 4135ea2d-6df8-44a3-9df3-4b5a84be39ad) is purpose-built for exactly this and
+# can't drift the way a hand-maintained one can, so it replaces what used to be
+# a custom aws_cloudfront_cache_policy.api resource here.
+locals {
+  cloudfront_managed_cache_policy_caching_disabled = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
 }
 
 resource "aws_cloudfront_origin_request_policy" "api" {
@@ -127,7 +125,7 @@ resource "aws_cloudfront_distribution" "web" {
     allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
     cached_methods           = ["GET", "HEAD"]
     compress                 = true
-    cache_policy_id          = aws_cloudfront_cache_policy.api.id
+    cache_policy_id          = local.cloudfront_managed_cache_policy_caching_disabled
     origin_request_policy_id = aws_cloudfront_origin_request_policy.api.id
   }
 

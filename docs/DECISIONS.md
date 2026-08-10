@@ -549,6 +549,29 @@ deploy role's IAM surface for a demo-scale, single-operator system where a bad `
 is caught by the pipeline's post-invalidation smoke-test step and fixed by hand within
 minutes, not autonomously.
 
+### `terraform validate` cannot catch API-level rejections — only a real apply can
+
+**Found during the first live apply (Task 8).** `terraform fmt` and `terraform validate`
+passed cleanly throughout Tasks 4–6, but the first real `terraform apply` still failed
+partway on two errors neither one could have caught: `aws_security_group.alb`'s
+description contained an apostrophe (`"...CloudFront's origin-facing ranges."`), which
+`validate` accepts as a perfectly good HCL string but AWS's `CreateSecurityGroup` API
+rejects at 400 — the security-group-description charset (`a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*`)
+has no apostrophe in it. And `aws_cloudfront_cache_policy.api` set `min_ttl`/`default_ttl`/
+`max_ttl` to `0` (caching disabled) while also setting
+`enable_accept_encoding_gzip`/`brotli` — valid per the provider's schema, but
+`CreateCachePolicy` rejects those two parameters once a policy's TTLs mean there is no
+cache key left for them to vary. Both are checked only by the destination API at apply
+time, not by anything Terraform can verify offline: `validate` checks HCL syntax and
+provider *schema* (types, required attributes, resource references), never the target
+API's runtime value constraints. The fix for the cache policy was to stop hand-maintaining
+one at all and reference AWS's managed `Managed-CachingDisabled` policy instead (id
+`4135ea2d-6df8-44a3-9df3-4b5a84be39ad`, confirmed via `aws cloudfront list-cache-policies
+--type managed` rather than trusted from memory) — it is purpose-built for exactly this
+API origin case and cannot drift the way a custom policy can. This is exactly why the
+plan sequenced a real `terraform apply` as its own task before the `v0.3-aws` tag, rather
+than treating a clean `validate` as sufficient signoff on the infra code.
+
 ---
 
 ## 12. Process

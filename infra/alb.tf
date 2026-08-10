@@ -30,7 +30,7 @@ data "aws_ec2_managed_prefix_list" "cloudfront" {
 
 resource "aws_security_group" "alb" {
   name_prefix = "${local.name}-alb-"
-  description = "Public ingress to the ALB, restricted to CloudFront's origin-facing ranges."
+  description = "Public ingress to the ALB, restricted to CloudFront origin-facing ranges."
   vpc_id      = data.aws_vpc.default.id
 
   ingress {

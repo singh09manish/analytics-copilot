@@ -6,12 +6,18 @@ credential rotates.
 """
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SECRET_NAME = "analytics-copilot/runtime"
 REGION = "us-east-1"
+
+# Same PATH problem the Makefile already works around for `uv`: a local install
+# puts the AWS CLI in ~/.local/bin, which a `uv run` subprocess doesn't inherit
+# on this machine. Prefer whatever's on PATH, fall back to the standard location.
+AWS_BIN = shutil.which("aws") or str(pathlib.Path.home() / ".local/bin/aws")
 
 # Values copied straight from .env.
 FROM_ENV = [
@@ -52,7 +58,7 @@ def main() -> None:
     payload["SNOWFLAKE_PRIVATE_KEY_PEM"] = key_path.read_text()
 
     subprocess.run(
-        ["aws", "secretsmanager", "put-secret-value",
+        [AWS_BIN, "secretsmanager", "put-secret-value",
          "--secret-id", SECRET_NAME, "--region", REGION,
          "--secret-string", json.dumps(payload)],
         check=True, stdout=subprocess.DEVNULL,
