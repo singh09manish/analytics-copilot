@@ -7,9 +7,15 @@ from typing import TypedDict
 from langgraph.graph import END, StateGraph
 
 from copilot.agent import prompts
+from copilot.agent.checkpointer import BoundedInMemorySaver
 from copilot.llm.schemas import QueryPlan, SqlDraft
 from copilot.retrieval import RetrievedContext, retrieve
 from copilot.sql_guard import SqlGuardError, validate
+
+# Process-global conversation memory, shared by every graph this module builds and
+# keyed by thread_id. Bounded (see checkpointer.py): a plain InMemorySaver retained
+# every super-step's channel values -- including result rows -- forever.
+_CHECKPOINTER = BoundedInMemorySaver()
 
 MAX_SUMMARY_ROWS = 50
 SCOPE_MESSAGE = ("I answer questions about the analytics warehouse - machines, "
@@ -190,8 +196,3 @@ def build_graph(provider, sf, executor=None, use_memory: bool = True):
     # never-reused thread_id doesn't mint a permanent, never-freed entry in the
     # process-global InMemorySaver.
     return g.compile(checkpointer=_CHECKPOINTER if use_memory else None)
-
-
-from langgraph.checkpoint.memory import InMemorySaver
-
-_CHECKPOINTER = InMemorySaver()
