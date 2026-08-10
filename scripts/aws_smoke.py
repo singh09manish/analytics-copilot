@@ -68,6 +68,13 @@ def warm_up(base: str, analyst_pw: str) -> None:
 def main() -> None:
     if len(sys.argv) != 4:
         sys.exit("usage: aws_smoke.py <base-url> <analyst-password> <admin-password>")
+    if not sys.argv[1].strip():
+        sys.exit(
+            "base URL is empty. Check `terraform -chdir=infra output -raw app_url` "
+            "-- it should print the deployed app's URL; an empty result usually "
+            "means terraform couldn't find infra/ (wrong -chdir) or the stack "
+            "hasn't been applied yet."
+        )
     base, analyst_pw, admin_pw = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3]
     failures = []
 

@@ -110,6 +110,14 @@ about it are easy to miss:
   recovery window. `make aws-secret` must be run again after every `make aws-up` that
   follows a `make aws-down` — the new secret starts with no version at all (see
   `infra/secrets.tf`), and the ECS task will fail to start until it does.
+- `CLOUDFRONT_DISTRIBUTION_ID` and `APP_URL` are **not** deterministic across a
+  destroy/create cycle (unlike `WEB_BUCKET` and `AWS_DEPLOY_ROLE_ARN`, which are
+  stable). A re-up gets a new CloudFront distribution and a new URL, so the two
+  `gh variable set` lines below for those values must be re-run after every
+  `make aws-up` that follows a `make aws-down` — otherwise the next deploy builds,
+  pushes, and rolls the service successfully, then fails at the CDN invalidation
+  step with `NoSuchDistribution`, and any smoke test run against the old `APP_URL`
+  hits a dead address.
 
 ### Architecture decisions
 
@@ -140,14 +148,20 @@ about it are easy to miss:
 
 ### Cost
 
-Roughly **$1-2/day** while the stack sits idle between demos:
+Roughly **$2.0-2.3/day** while the stack sits idle between demos:
 
 | Resource | ~cost/day |
 |---|---|
 | Fargate task (0.5 vCPU / 2GB, always on) | ~$0.90 |
 | Application Load Balancer | ~$0.55 |
+| Public IPv4 addresses ($0.005/IP-hr): 5, one per ALB subnet (`data.aws_subnets.app`), plus 1 for the Fargate task's own public IP (see "Fargate tasks run in public subnets" above) | ~$0.72 (~$0.60 + ~$0.12) |
 | CloudFront, S3, ECR, Secrets Manager, CloudWatch logs (7-day retention) | ~$0.10-0.30 |
 | NAT gateway | $0 (not used — see above) |
+
+The public-IPv4 line is easy to miss — it is a per-enabled-subnet charge on an
+internet-facing ALB, not a per-ALB one, and it stacks with the task's own public IP.
+It is the reason the total lands at ~$2/day rather than the $1/day a quick glance at
+"Fargate + ALB" would suggest.
 
 Run `make aws-down` between demos if the cost matters more than the ~5-15 minutes it
 takes CloudFront to redeploy on the next `make aws-up`.

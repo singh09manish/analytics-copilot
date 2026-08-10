@@ -40,7 +40,10 @@ def test_cors_origin_list_splits_and_strips():
 
 
 def test_cors_origin_list_default_is_local_dev():
-    assert Settings().cors_origin_list() == ["http://localhost:5173"]
+    # _env_file=None so this asserts the field's actual default rather than
+    # whatever CORS_ALLOW_ORIGINS this machine's repo-root .env happens to set --
+    # a bare Settings() would pass today only by coincidence.
+    assert Settings(_env_file=None).cors_origin_list() == ["http://localhost:5173"]
 
 
 def test_middleware_cors_wired_from_settings():

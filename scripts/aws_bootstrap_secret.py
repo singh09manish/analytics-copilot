@@ -38,8 +38,16 @@ def read_env() -> dict[str, str]:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        line = line.removeprefix("export ")
         k, v = line.split("=", 1)
-        out[k.strip()] = v.strip()
+        v = v.strip()
+        # Strip one layer of matching surrounding quotes -- a shell-style
+        # `KEY="value"` or `KEY='value'` would otherwise push the literal quote
+        # characters into Secrets Manager and the app would fail auth with no
+        # obvious cause.
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
+        out[k.strip()] = v
     return out
 
 

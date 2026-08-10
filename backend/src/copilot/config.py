@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     # Comma-separated. Same-origin behind CloudFront makes this moot in AWS, but it
     # stays configurable so a split-origin deployment does not need a code change.
     cors_allow_origins: str = "http://localhost:5173"
-    aws_region: str = "us-east-1"
 
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]

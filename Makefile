@@ -56,7 +56,7 @@ check-env:
 mcp-server:
 	$(UV) run python ../mcp_server/server.py
 
-TF := ~/.local/bin/terraform -chdir=infra
+TF := ~/.local/bin/terraform -chdir=$(CURDIR)/infra
 
 aws-plan:
 	$(TF) init -input=false

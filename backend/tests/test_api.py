@@ -87,6 +87,23 @@ def test_healthz_open():
     assert TestClient(app).get("/healthz").json() == {"status": "ok"}
 
 
+def test_unprefixed_routes_are_gone(monkeypatch):
+    """Regression guard: every route moved under /api (CloudFront forwards /api/*
+    to the ALB; see the comment above app = FastAPI(...) in main.py), but nothing
+    asserted the old unprefixed paths stopped resolving. A future accidental
+    re-registration of a bare /chat, /auth/login, or /feedback route would be
+    invisible to the rest of this suite while quietly exposing a second,
+    unintended surface. /healthz is the one exception -- it deliberately stays at
+    the root for the ALB's own health check, which talks to the task directly and
+    never goes through CloudFront."""
+    c = _client(monkeypatch)
+    assert c.post("/chat", json={"question": "hi"}).status_code == 404
+    assert c.post("/auth/login", json={"email": "analyst@demo", "password": "pw123"}).status_code == 404
+    assert c.post("/feedback", json={"request_id": "r", "conversation_id": None,
+                                   "rating": "up", "comment": None}).status_code == 404
+    assert c.get("/healthz").status_code == 200
+
+
 class _TrackingProvider(FakeProvider):
     """FakeProvider that records every structured() prompt it was given, so tests
     can inspect whether conversation history leaked into a later call's prompt."""

@@ -9,7 +9,10 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
 
 # Then the source. mcp_server/ is a sibling of backend/ because McpExecutor spawns
-# ../mcp_server/server.py, and REPO_ROOT resolves to /app/backend.
+# REPO_ROOT / "mcp_server" / "server.py" (mcp_client.py), and REPO_ROOT is
+# config.py's own Path(__file__).parents[3] -- from
+# /app/backend/src/copilot/config.py that resolves to /app, not /app/backend. So
+# mcp_server/ must land at /app/mcp_server for that spawn to find it.
 COPY backend/src ./src
 COPY backend/README.md* ./
 COPY mcp_server /app/mcp_server
