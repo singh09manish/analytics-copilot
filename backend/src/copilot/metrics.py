@@ -30,5 +30,5 @@ def emit(name: str, value: float, unit: str = "Count", **dimensions: str) -> Non
             **dims,
         }
         print(json.dumps(payload), flush=True)
-    except Exception:  # noqa: BLE001 -- telemetry must never break a response
+    except Exception:  # noqa: BLE001,S110 -- telemetry must never break a response
         pass
