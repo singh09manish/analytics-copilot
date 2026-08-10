@@ -55,6 +55,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Analytics Copilot", lifespan=lifespan)
 
 
+# CORS origins are resolved once at import time (not request time) because
+# get_settings() is @lru_cache'd. This is correct for containerized deployment,
+# where environment variables are set before the process starts. For local testing
+# that needs to vary CORS_ALLOW_ORIGINS between tests, set the env var before
+# importing this module (e.g., in pytest fixtures that use monkeypatch), not after.
 def _cors_origins() -> list[str]:
     from copilot.config import get_settings
 

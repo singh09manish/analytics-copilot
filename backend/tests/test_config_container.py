@@ -41,3 +41,28 @@ def test_cors_origin_list_splits_and_strips():
 
 def test_cors_origin_list_default_is_local_dev():
     assert Settings().cors_origin_list() == ["http://localhost:5173"]
+
+
+def test_middleware_cors_wired_from_settings():
+    """Verify CORS middleware is configured with origins from settings, not hardcoded."""
+    from copilot.api.main import app
+    from copilot.config import get_settings
+
+    # Find the CORSMiddleware in the app's middleware stack
+    cors_middleware = None
+    for middleware in app.user_middleware:
+        if middleware.cls.__name__ == "CORSMiddleware":
+            cors_middleware = middleware
+            break
+    assert cors_middleware is not None, "CORSMiddleware not found in app middleware"
+
+    # Verify the middleware was configured with origins from settings
+    expected_origins = get_settings().cors_origin_list()
+    actual_origins = cors_middleware.kwargs.get("allow_origins", [])
+
+    # Starlette stores allow_origins as a tuple or list depending on version
+    actual_origins = list(actual_origins) if actual_origins else []
+    assert actual_origins == expected_origins, (
+        f"CORS middleware origins {actual_origins} do not match "
+        f"settings {expected_origins}"
+    )
