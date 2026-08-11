@@ -1,6 +1,14 @@
 from copilot.retrieval import RetrievedContext
 
-PROMPT_VERSION = "v3"
+# Bump this whenever a prompt body changes in a way that could move behaviour. It is
+# written to every REQUEST_LOG and EVAL_RESULTS row, and it is the only thing that lets
+# you tell "accuracy dropped" from "accuracy dropped after v4 shipped on Tuesday".
+#
+# v3 covered three materially different planner prompts before this was noticed: the
+# original, the six-column-name correction, and the 22-to-49-column inventory expansion
+# that fixed parts-cost questions being refused outright. Those rows are therefore not
+# separable by version -- a real cost of bumping late, recorded here rather than hidden.
+PROMPT_VERSION = "v4"
 
 TODAY = "2026-08-08"  # demo data ends 2026-08-07; keeps 'last quarter' well-defined
 

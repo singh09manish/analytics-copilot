@@ -9,7 +9,7 @@ SCHEMA_CARDS_PATH = REPO_ROOT / "data" / "ai_library" / "schema_cards.yaml"
 
 
 def test_prompt_version_bumped():
-    assert prompts.PROMPT_VERSION == "v3"
+    assert prompts.PROMPT_VERSION == "v4"
 
 
 def test_plan_system_mentions_intents():
