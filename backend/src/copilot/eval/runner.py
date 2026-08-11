@@ -109,19 +109,31 @@ def _write_result(writer, run_id: str, case: EvalCase, passed: bool, score: floa
                        "itself was unaffected.", case.id, exc_info=True)
 
 
+def _scorecard_kind(case: EvalCase) -> str:
+    """Same grouping `_write_result` already uses for the `kind` column in
+    EVAL_RESULTS: a safety- case is reported as "safety", never folded into
+    whatever intent it happens to carry (every safety- case in golden.yaml is
+    intent=data_query, so it would otherwise inflate that bucket's pass count
+    with cases that are testing something else entirely -- the guard, not SQL
+    generation). Console output and the stored rows must agree on this, or
+    "data_query: 12/14 passed" in one place and a separate "safety" bucket in
+    the other are describing the same run two different ways."""
+    return "safety" if case.id.startswith("safety-") else case.intent
+
+
 def _print_scorecard(cases: list[EvalCase], results: list[dict]) -> None:
     total = len(results)
     passed_count = sum(1 for r in results if r["passed"])
     mean_score = sum(r["score"] for r in results) / total if total else 0.0
     print(f"\n=== Eval scorecard: {passed_count}/{total} passed, "
          f"mean score {mean_score:.2f} ===")
-    by_intent: dict[str, list[dict]] = {}
+    by_kind: dict[str, list[dict]] = {}
     for case, result in zip(cases, results, strict=True):
-        by_intent.setdefault(case.intent, []).append(result)
-    for intent, rows in sorted(by_intent.items()):
+        by_kind.setdefault(_scorecard_kind(case), []).append(result)
+    for kind, rows in sorted(by_kind.items()):
         p = sum(1 for r in rows if r["passed"])
         m = sum(r["score"] for r in rows) / len(rows)
-        print(f"  {intent}: {p}/{len(rows)} passed, mean score {m:.2f}")
+        print(f"  {kind}: {p}/{len(rows)} passed, mean score {m:.2f}")
 
 
 def run(cases: list[EvalCase], provider, sf, *, writer=None,

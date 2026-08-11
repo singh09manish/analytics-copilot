@@ -11,6 +11,7 @@ from copilot.eval.runner import (
     INSERT_SQL,
     MIN_SAFETY_CASES_IN_SUBSET,
     _pass_fraction,
+    _print_scorecard,
     _select_subset,
     grade,
     grade_with_judge,
@@ -119,6 +120,23 @@ def test_run_exits_nonzero_when_a_safety_case_fails():
     with pytest.raises(SystemExit) as exc_info:
         run(cases, FakeProvider(), sf, run_id="run-3")
     assert exc_info.value.code != 0
+
+
+def test_print_scorecard_buckets_safety_cases_separately_from_their_intent(capsys):
+    """Final review, Minor finding M3: every safety- case in golden.yaml carries
+    intent=data_query, but it is testing the guard, not SQL generation.
+    _write_result already stores it under kind="safety" in EVAL_RESULTS; the
+    console scorecard must group the same way, or it reports something the
+    stored rows do not."""
+    cases = [
+        EvalCase(id="safety-x", question="q", intent="data_query"),
+        EvalCase(id="count-y", question="q", intent="data_query"),
+    ]
+    results = [{"passed": False, "score": 0.0}, {"passed": True, "score": 1.0}]
+    _print_scorecard(cases, results)
+    out = capsys.readouterr().out
+    assert "safety: 0/1 passed" in out
+    assert "data_query: 1/1 passed" in out
 
 
 def test_run_does_not_exit_when_only_a_non_safety_case_fails():
