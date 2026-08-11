@@ -15,7 +15,10 @@
 - table_name: GOLD.DIM_DATE
   card: |
     GOLD.DIM_DATE - calendar spine 2024-01-01..2026-12-31. Columns: date_day (PK),
-    year, quarter, month, month_name, day_of_week, is_weekend.
+    year, quarter, month, month_name, day_of_week, is_weekend. Join to facts via
+    date_day for calendar rollups; it carries no business metrics of its own.
+    Sample questions: is this date a weekend; which fiscal quarter a date falls
+    in; weekday vs weekend counts.
 - table_name: GOLD.FACT_MACHINE_UTILIZATION
   card: |
     GOLD.FACT_MACHINE_UTILIZATION - one row per machine per day, 146000 rows,
@@ -36,8 +39,11 @@
     closed_at (NULL if open), severity (Critical/High/Medium/Low), category
     (Beam Generation/Imaging/Software/Cooling/Mechanical/Electrical),
     resolution_hours, parts_cost, is_open (boolean).
-    MTTR = AVG(resolution_hours) over closed tickets.
-    Sample questions: MTTR by severity; open critical tickets; parts cost by model.
+    MTTR = AVG(resolution_hours) over closed tickets. No model column here -
+    for parts cost or repair spend by model, JOIN GOLD.DIM_MACHINE m USING
+    (machine_id) and GROUP BY m.model.
+    Sample questions: MTTR by severity; open critical tickets; total parts
+    cost; which machines cost the most to repair.
 - table_name: GOLD.V_CENTER_MONTHLY_KPIS
   card: |
     GOLD.V_CENTER_MONTHLY_KPIS - pre-aggregated monthly KPIs per center (view).

@@ -802,6 +802,58 @@ column exists — logged here rather than fixed in this pass, and rather than pa
 changing the eval to expect `unsupported`. Weakening a case until it passes when the system is
 actually wrong would have destroyed the one signal this run was for.
 
+### The same golden case failed twice, in two different layers -- and the harness's value was telling them apart
+`465b048` fixed `parts-cost-by-model`'s first failure: the planner's condensed table inventory
+was missing `parts_cost`, so it refused the question as `unsupported`. With that fixed, the
+planner correctly classified the question `data_query` -- and the case still failed. The
+recall-only retrieval eval (`data/evals/retrieval.yaml`, `copilot/eval/retrieval_eval.py`), which
+scores `retrieval.retrieve()` in isolation from the planner and the guard, is what pinned the
+second defect precisely: `retrieve("What is the total parts cost by machine model?")` returned
+`GOLD.DIM_DATE`, `GOLD.FACT_MACHINE_UTILIZATION`, `GOLD.DIM_MACHINE` -- never
+`GOLD.FACT_SERVICE_TICKET`, the only table with a `parts_cost` column. The planner was behaving
+correctly. The sqlglot guard never got a chance to reject anything, because nothing wrong ever
+reached it -- the SQL generator was simply never shown the table it needed. Both of the other two
+defense/routing layers were doing their job; the defect was retrieval alone, and only scoring that
+layer on its own made that legible instead of just "the answer was wrong."
+
+That distinction was the whole value of catching this with the retrieval harness rather than the
+full eval: a wrong answer names a symptom, but which layer produced it changes what gets fixed and
+by whom. The concrete harm, per the sampled generations that surfaced this: one attempt answered
+"no parts cost data is available" -- wrong, but at least inert -- and another generated
+`SUM(f.parts_cost)` against `GOLD.FACT_MACHINE_UTILIZATION`, which has no `parts_cost` column at
+all and would fail at Snowflake with a column-not-found error. That second outcome is the one
+worth dwelling on: a missing schema card does not make an LLM say "I don't have that table" -- it
+makes the model's fluency paper over the gap with a plausible-looking column reference on whichever
+retrieved table looked closest, with no signal anywhere that the SQL about to run against the
+warehouse was never grounded in a real column. A retrieval miss doesn't fail loud; it fails as a
+confident, well-formed, fabricated `SELECT`.
+
+The fix was schema-card wording only -- the same lever as the earlier DIM_MACHINE join-hint
+regression this case sits next to in `retrieval.yaml`. `GOLD.FACT_SERVICE_TICKET`'s card already
+contained the literal phrase "parts cost by model" in its sample questions and still lost: Cortex's
+`EMBED_TEXT_768` scores whole-card cosine similarity, not substring match, and the rest of the
+card's vocabulary (severity, category, MTTR, ticket lifecycle) pulled its embedding toward
+ticket-management semantics, not cost semantics, diluting the one relevant phrase. The working fix
+mirrors `FACT_MACHINE_UTILIZATION`'s existing "No model column here -- JOIN GOLD.DIM_MACHINE m ...
+GROUP BY m.model" pattern, added to `FACT_SERVICE_TICKET`'s card for the same reason: a "by model"
+question needs that join partner named in its own text to compete with tables that already own
+"model" semantically. `GOLD.DIM_DATE` needed a matching, unplanned fix: it was the only card with
+no "Sample questions" line, and its short, low-signal text was scoring anomalously high against
+nearly every probe tried, including both target questions here, crowding the real match out of the
+top-3. Completing its card to the shape every other table already has was itself part of closing
+this gap, not a stylistic tidy-up.
+
+Getting both `GOLD.FACT_SERVICE_TICKET` and `GOLD.DIM_MACHINE` into the same top-3 without
+regressing the pre-existing `utilization-worst-delivery-by-model` case (which needs
+`FACT_MACHINE_UTILIZATION` + `DIM_MACHINE` in those slots, not `FACT_SERVICE_TICKET`) took three
+iterations, each checked against the full `retrieval.yaml` set rather than just the two target
+questions. An early, more heavily "model"-worded version of the card passed both target questions
+but pulled `FACT_SERVICE_TICKET` into second or third place on `utilization-worst-delivery-by-model`
+and the "how many machines per model?" control question, displacing `DIM_MACHINE` on cosine-
+similarity margins as thin as 0.007. `retrieval_eval.py`'s recall@k over the whole case set --
+not eyeballing three probe questions after each edit -- is what caught that before it shipped.
+Mean recall across all nine `retrieval.yaml` cases after the fix: 1.00.
+
 ### Admin endpoints return 403, not 404
 `_require_admin` (`api/main.py:291-302`) raises 403 for an authenticated non-admin, not 404.
 `_require_identity` already runs first and raises 401 for anyone unauthenticated, so by the
