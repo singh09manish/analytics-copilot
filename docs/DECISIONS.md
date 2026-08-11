@@ -649,7 +649,7 @@ reading the exact metric and dimension names at the `emit()` call sites (`api/ma
 367-373`) rather than assumed — a widget naming a dimension that is never emitted renders
 empty forever with no error either, the same failure mode one layer up.
 
-The eval job (`copilot.eval.runner`'s `--publish`, `runner.py:180-207`) is the opposite
+The eval job (`copilot.eval.runner`'s `--publish`, `runner.py:192-219`) is the opposite
 case, and deliberately so: it runs in GitHub Actions, not inside the ECS task, so it has no
 log stream shipping to CloudWatch Logs to piggyback on. `PutMetricData` is the only way for
 it to land `EvalAccuracy`/`EvalRetrievalRecall` in the same namespace, which is why
@@ -672,8 +672,8 @@ harness fast, cheap, and reproducible for the majority of cases, and spends the
 slower/costlier/noisier tool only where a cheaper one structurally cannot do the job.
 
 ### `safety-` case failures exit the run non-zero, independent of the pass rate
-`run()` (`runner.py:127-150`) prints a scorecard for every case, but a failed `safety-` case
-triggers `sys.exit(1)` regardless of how many other cases passed (`runner.py:144-149`). A
+`run()` (`runner.py:139-162`) prints a scorecard for every case, but a failed `safety-` case
+triggers `sys.exit(1)` regardless of how many other cases passed (`runner.py:156-161`). A
 guard rejection is not a soft quality signal like "the SQL didn't mention the right table" —
 it means one of the three SQL defense layers documented in §3 regressed, and a regressed
 defense layer is exactly the kind of failure a green-looking scorecard (28/30, "97% mean
@@ -694,20 +694,32 @@ directly (`MEDTECH_ANALYTICS.SILVER.SERVICE_TICKETS`) — a read the planner cor
 classifies as `data_query`, that reaches the guard, and that the guard rejects for a real,
 verifiable reason (`schema SILVER is not allowed`).
 
-**Known limitation, stated rather than hidden:** the CI smoke subset
-(`.github/workflows/evals.yml`, `--subset 5` on `pull_request`) has no Snowflake credentials
-on that trigger at all — a PR branch cannot assume the OIDC deploy role (the trust condition
-in `infra/iam.tf` only matches `ref:refs/heads/main`), and duplicating Snowflake credentials
-as a second GitHub secret just for this path was rejected for the same reason it was rejected
-for the weekly run (see below). But `retrieve()` (`retrieval.py:40-69`) unconditionally needs
-a live Snowflake connection for schema-card lookup before a `data_query` case's SQL is even
-generated, let alone validated — so in a live run, the PR subset's `safety-` cases currently
-fail with `error_type="snowflake"` rather than exercising the guard, the exact false-negative
-shape the `safety-update-open-tickets` fix above was written to eliminate. This gap is not
-resolved in Phase 3B; it is flagged here, in the workflow file's own comments, and in
-`FLOW.md` §9 for whoever picks it up. The two obvious fixes are a scoped-down,
-read-only Snowflake credential provisioned specifically for CI (a real new credential, not a
-duplicate of the app's), or an offline/static schema-card fallback in `retrieve()` that lets
+**A known limitation, closed by removing the trigger rather than working around it (Final
+review, Critical finding C3).** This workflow originally also carried a `pull_request:`
+trigger running `--subset 5` as a cheap per-PR smoke check. It could not work: a PR branch
+cannot assume the OIDC deploy role (the trust condition in `infra/iam.tf` only matches
+`ref:refs/heads/main`), and duplicating Snowflake credentials as a second GitHub secret just
+for this path was rejected for the same reason it was rejected for the weekly run (see below).
+But `retrieve()` (`retrieval.py:40-69`) unconditionally needs a live Snowflake connection for
+schema-card lookup before a `data_query` case's SQL is even generated, let alone validated —
+so every PR subset run failed all five subset cases, including the `safety-` cases the subset
+exists to protect, with `error_type="snowflake"` rather than exercising the guard: the exact
+false-negative shape the `safety-update-open-tickets` fix above was written to eliminate,
+reintroduced one layer up. Worse, only forks are excluded from repo secrets — a same-repo PR
+still received `ANTHROPIC_API_KEY` — so this ran, and spent real Anthropic API calls to
+manufacture five guaranteed FAILs, on every ordinary PR. Compounding both: GitHub's default
+Linux shell has no `pipefail`, so `runner | tee scorecard.txt` silently discarded those FAILs'
+exit code and the job still reported green (Final review, Critical finding C1) — three
+independent defects stacked on one broken trigger.
+
+The fix actually shipped is the simplest of the options considered: delete the trigger rather
+than work around it. The guard already has real, hermetic, zero-cost coverage on every PR —
+`backend/tests/test_sql_guard.py`, run by `ci.yml`, needs no warehouse and no API key — so a
+live-but-broken PR subset was adding false confidence on top of that, not real coverage. Two
+other options were considered and rejected as unnecessary for closing this gap, though either
+remains available if a live-pipeline PR check is ever wanted: a scoped-down, read-only
+Snowflake credential provisioned specifically for CI (a real new credential, not a duplicate
+of the app's), or an offline/static schema-card fallback in `retrieve()` that would let
 guard-only cases run with no warehouse at all.
 
 ### Admin endpoints return 403, not 404

@@ -9,7 +9,11 @@ Snowflake result and back.
 Keep the `file:line` references accurate; a stale line number is worse than none. See
 [DECISIONS.md](DECISIONS.md) for *why* each of these things is the way it is.
 
-*Verified against the tree at commit `8c564b0`. Line numbers reflect that commit.*
+*Verified against the tree at commit `7b4af37`. Line numbers reflect that commit.*
+*(Section 2's `main.py:NNN` citations were re-derived and corrected against that
+same commit's `backend/src/copilot/api/main.py` — Final review, Important
+finding I7 — after the admin SQL constants added earlier in that file, in
+commit `c626b90`, had drifted them 45-65 lines without a matching update here.)*
 
 ---
 
@@ -87,32 +91,34 @@ it twice — once normally, once through the repair edge.
 
 ## 2. One chat request, end to end
 
-`POST /api/chat` → `main.py:259`.
+`POST /api/chat` → `main.py:324`.
 
-1. **Authenticate** — `_require_identity` (`main.py:220-237`). Reads the `Authorization`
-   header (`main.py:230-232`); missing or non-`Bearer` → 401. Decodes **once** via
+1. **Authenticate** — `_require_identity` (`main.py:271-288`). Reads the `Authorization`
+   header (`main.py:281-283`); missing or non-`Bearer` → 401. Decodes **once** via
    `auth.decode_token` (`auth.py:39-43`, `algorithms=["HS256"]`), returns
-   `(payload["role"], payload["sub"])`. Catches `AuthError` **and** `KeyError` together
-   (`main.py:236-237`) so a validly-signed token missing a claim is a 401, not a 500.
-2. **Validate input** — empty question → 400 (`main.py:261-262`). A `conversation_id`
-   containing `:` → 400 (`main.py:268-269`), because `:` separates the checkpointer's
+   `(payload["role"], payload["sub"])` (`main.py:285-286`). Catches `AuthError` **and**
+   `KeyError` together (`main.py:287-288`) so a validly-signed token missing a claim is a
+   401, not a 500.
+2. **Validate input** — empty question → 400 (`main.py:326-327`). A `conversation_id`
+   containing `:` → 400 (`main.py:333-334`), because `:` separates the checkpointer's
    thread key and must stay unambiguous.
-3. **Build dependencies** — `_deps()` (`main.py:270`).
-4. **Pick the retrieval session** — `main.py:271`:
+3. **Build dependencies** — `_deps()` (`main.py:335`).
+4. **Pick the retrieval session** — `main.py:336`:
    `sf = state.sf_admin if role == "admin" else state.sf_ro`.
-5. **Pick the execution role** — `main.py:280`:
+5. **Pick the execution role** — `main.py:345`:
    `sf_role = "COPILOT_ADMIN" if role == "admin" else "COPILOT_APP_RO"`. Derived only from
    the verified token, fail-closed to the masked role. Masking CASEs on `CURRENT_ROLE()`,
    so the role must follow the query all the way to execution, not just retrieval.
-6. **Get a live executor** — `_live_executor(state)` (`main.py:285`), then bind the role
-   onto it with `functools.partial` (`main.py:286-287`) so the graph still sees the
+6. **Get a live executor** — `_live_executor(state)` (`main.py:350`), then bind the role
+   onto it with `functools.partial` (`main.py:351-352`) so the graph still sees the
    `(sql) -> (columns, rows)` shape it expects.
 7. **Namespace the conversation** — `_scoped_conversation_id(email, id)`
-   (`main.py:197-205`) returns `f"{email}:{conversation_id}"`, or `None` if the client sent
-   none. `None` stays `None`: an anonymous turn gets no memory and mints no checkpoint.
-8. **Run the agent** — `answer_question(...)` (`main.py:295-296` → `pipeline.py:26`).
-9. **Log the request** — `log_request(...)` (`main.py:298-301`). The logged conversation id
-   comes from `_logged_conversation_id` (`main.py:208-217`), which is *always*
+   (defined `main.py:248-256`, called `main.py:358`) returns `f"{email}:{conversation_id}"`,
+   or `None` if the client sent none. `None` stays `None`: an anonymous turn gets no memory
+   and mints no checkpoint.
+8. **Run the agent** — `answer_question(...)` (`main.py:360-361` → `pipeline.py:26`).
+9. **Log the request** — `log_request(...)` (`main.py:363-366`). The logged conversation id
+   comes from `_logged_conversation_id` (defined `main.py:259-268`), which is *always*
    identity-scoped and never `None` — `REQUEST_LOG` has no user column, so without this an
    audit row cannot name its actor.
 10. **Emit metrics** — `main.py:367-373`, four `metrics.emit()` calls (`metrics.py:17-34`)
@@ -124,11 +130,11 @@ it twice — once normally, once through the repair edge.
     via `PutMetricData` instead, since that job has no log stream to piggyback on.
     `emit()` swallows every exception, so a malformed metric never breaks the response —
     see `docs/DECISIONS.md` for the resulting silent-drop trade-off.
-11. **Return** the `ChatResponse` (`main.py:309`).
+11. **Return** the `ChatResponse` (`main.py:374`).
 
-`POST /api/feedback` (`main.py:312-326`) follows the same auth path, validates the rating,
+`POST /api/feedback` (`main.py:377-391`) follows the same auth path, validates the rating,
 and writes via `sf_writer`. Unlike request logging, a feedback write failure **is**
-surfaced — 503 (`main.py:324-325`) — because the user is owed the truth about whether their
+surfaced — 503 (`main.py:389-390`) — because the user is owed the truth about whether their
 feedback was recorded.
 
 ---
@@ -446,7 +452,7 @@ real pipeline, not a mock of it.
 
 1. **Load** — `load_cases()` (`eval/cases.py:28-36`) parses the YAML into `EvalCase` and
    rejects duplicate ids.
-2. **Run** — `run(cases, provider, sf, writer=None)` (`eval/runner.py:127-150`) calls
+2. **Run** — `run(cases, provider, sf, writer=None)` (`eval/runner.py:139-162`) calls
    `answer_question(case.question, provider, sf)` once per case (the exact function §2
    calls from `/api/chat`), then `grade_with_judge` (`runner.py:70-82`).
 3. **Grade** — `grade()` (`runner.py:42-67`) is pure and deterministic: an unexpected
@@ -456,16 +462,20 @@ real pipeline, not a mock of it.
    the deterministic grade already passed *and* the case carries a `judge:` criterion —
    prose answers need judgment, everything else does not.
 4. **Log** — if `writer` is given, each result is a row in `COPILOT.EVAL_RESULTS`
-   (`runner.py:29-33`, `INSERT_SQL`), which `make evals` (`Makefile`) supplies and
-   `--subset`/CI smoke runs do not.
-5. **Scorecard and gate** — `_print_scorecard` (`runner.py:112-124`) prints a pass count,
-   mean score, and per-intent breakdown. `run()` (`runner.py:127-150`) then exits the
-   process non-zero if any `safety-` case failed (`runner.py:144-149`) — a guard regression
-   is not a soft signal.
-6. **CLI** — `main()` (`runner.py:210-248`) adds `--subset N` (`_select_subset`,
-   `runner.py:153-173`: sorted by id, at least 2 `safety-` cases guaranteed) and `--publish`
-   (`runner.py:240-248` calling `_pass_fraction`, `runner.py:176-177`, and `_publish_metrics`,
-   `runner.py:180-207`: after the run, also scores every `retrieval.yaml` case via
+   (`runner.py:29-33`, `INSERT_SQL`), which every `main()` invocation attempts regardless of
+   `--subset` (a failed write, e.g. no reachable Snowflake, is logged and swallowed by
+   `_write_result`, not raised — the console output and exit code stay the source of truth).
+5. **Scorecard and gate** — `_print_scorecard` (`runner.py:124-136`) prints a pass count,
+   mean score, and a per-`kind` breakdown, where `kind` (`_scorecard_kind`, `runner.py:112-121`)
+   is "safety" for any `safety-` case regardless of its `intent` — the same grouping
+   `_write_result` (`runner.py:98-109`) already uses for `EVAL_RESULTS.kind`, so the console
+   and the stored rows agree. `run()` (`runner.py:139-162`) then exits the process non-zero
+   if any `safety-` case failed (`runner.py:156-161`) — a guard regression is not a soft
+   signal.
+6. **CLI** — `main()` (`runner.py:222-260`) adds `--subset N` (`_select_subset`,
+   `runner.py:165-185`: sorted by id, at least 2 `safety-` cases guaranteed) and `--publish`
+   (`runner.py:252-260` calling `_pass_fraction`, `runner.py:188-189`, and `_publish_metrics`,
+   `runner.py:192-219`: after the run, also scores every `retrieval.yaml` case via
    `retrieval_eval.score_retrieval`/`retrieve`, then one `boto3` `put_metric_data` call
    carrying both `EvalAccuracy` and `EvalRetrievalRecall` into the `AnalyticsCopilot`
    namespace).
@@ -473,12 +483,14 @@ real pipeline, not a mock of it.
    `recall@k` (`score_retrieval`, `retrieval_eval.py:34-41`) against `retrieve()`'s output
    directly, no LLM in the loop, and exits non-zero under `MIN_MEAN_RECALL = 0.8`
    (`retrieval_eval.py:20`).
-8. **CI** — `.github/workflows/evals.yml` runs `--subset 5` on every `pull_request` (no
-   Snowflake credentials — see the workflow's own comments and `docs/DECISIONS.md` for the
-   resulting limitation on what that specific run can verify) and the full set with
-   `--publish` on a weekly schedule and `workflow_dispatch`, assuming the deploy role via
-   OIDC and reading Snowflake credentials from the same Secrets Manager secret the ECS task
-   uses (`infra/iam.tf`'s `secretsmanager:GetSecretValue` grant).
+8. **CI** — `.github/workflows/evals.yml` runs the full set with `--publish` on a weekly
+   schedule and `workflow_dispatch`, assuming the deploy role via OIDC and reading Snowflake
+   credentials from the same Secrets Manager secret the ECS task uses (`infra/iam.tf`'s
+   `secretsmanager:GetSecretValue` grant). There is deliberately no `pull_request` trigger: a
+   PR branch cannot assume that role, so a PR-triggered subset failed every case with
+   `error_type="snowflake"` before the guard was ever reached (Final review, Critical finding
+   C3 — see `docs/DECISIONS.md` §12 for the full history). The guard itself is still covered
+   on every PR, hermetically and for free: `backend/tests/test_sql_guard.py`, run by `ci.yml`.
 
 ---
 

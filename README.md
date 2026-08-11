@@ -25,11 +25,13 @@ ECS Fargate, CloudFront) — see "Deploying to AWS" below. An admin-only
 anyone else) surfaces request/feedback tiles and a browser over both tables. An
 **eval harness** (`make evals`) runs a ~30-case golden set through the real
 pipeline — deterministic grading plus an LLM judge for prose answers, a
-separate retrieval-only recall@k pass, a CI smoke subset on every PR, and a
-weekly full run that publishes accuracy to CloudWatch — see "Evals" below.
-**CloudWatch telemetry** — a dashboard and two alarms over the EMF metrics the
-app already emits — completes the loop; see `terraform output dashboard_url`
-after `make aws-up`.
+separate retrieval-only recall@k pass, and a weekly full run (plus on-demand
+`workflow_dispatch`) that publishes accuracy to CloudWatch — see "Evals" below
+for why there is deliberately no PR-triggered subset. **CloudWatch telemetry**
+— a dashboard, plus two alarms watching two different signals (one over the
+EMF metrics the app already emits, one over the ALB's own native health
+metric) — completes the loop; see `terraform output dashboard_url` after
+`make aws-up`.
 
 ## Documentation
 
@@ -140,18 +142,33 @@ used by CI rather than a human at the keyboard:
   `AnalyticsCopilot`), so weekly drift is a line on the dashboard below, not
   a number buried in a CI log.
 
-`.github/workflows/evals.yml` wires this in: a 5-case smoke subset on every
-pull request (no warehouse access, no `--publish`), and the full golden set
-plus retrieval set weekly (Mondays) and on manual dispatch, with
-`--publish`.
+`.github/workflows/evals.yml` wires this in: the full golden set plus
+retrieval set, weekly (Mondays) and on manual `workflow_dispatch`, both with
+`--publish`. There is deliberately no `pull_request` trigger: a PR branch
+cannot assume the deploy role that reaches Snowflake (the OIDC trust condition
+in `infra/iam.tf` only matches `ref:refs/heads/main`), so a PR-triggered
+subset would fail every case with `error_type="snowflake"` before the guard
+was ever reached — a harness artifact, not a signal, and worse, a same-repo PR
+does receive the Anthropic secret, so it would spend real API calls to
+manufacture that false signal on every PR. The guard itself is still covered
+on every PR, hermetically and for free: `backend/tests/test_sql_guard.py`,
+run by `ci.yml`. `runner.py --subset N` still exists for a cheap manual
+`workflow_dispatch` run. See `docs/DECISIONS.md` §12 for the full reasoning.
 
 **Dashboard:** `terraform -chdir=infra output -raw dashboard_url` after
 `make aws-up` — answered/min by outcome, p50/p95 latency, retrieval latency by
-mode, tokens/min, ECS CPU/memory, and a log-insights panel of recent non-ok
-answers, all built from the EMF metrics the app already emits (see
-`backend/src/copilot/metrics.py`). Two alarms watch the same data: an
-elevated non-ok answer rate, and an unhealthy ALB target (a dead task is the
-failure that actually takes the demo down). See `infra/cloudwatch.tf`.
+mode, tokens/min, ECS CPU/memory, a log-insights panel of recent non-ok
+answers, and weekly `EvalAccuracy`/`EvalRetrievalRecall` drift, all built from
+the EMF metrics the app already emits (see `backend/src/copilot/metrics.py`)
+plus the two eval metrics the weekly job publishes via `PutMetricData`. Two
+alarms watch two different signals, not the same data: an elevated non-ok
+answer rate (a CloudWatch Metrics Insights query over the app's own EMF
+metrics — a metric-math `SEARCH` expression works for graphing, as the
+dashboard widgets above do, but CloudWatch's `PutMetricAlarm` categorically
+rejects one), and an unhealthy ALB target (`AWS/ApplicationELB`'s native
+`UnHealthyHostCount`, nothing to do with the app's own metrics at all — a dead
+task is the failure that actually takes the demo down). See
+`infra/cloudwatch.tf`.
 
 ## Deploying to AWS
 
