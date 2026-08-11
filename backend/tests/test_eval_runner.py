@@ -5,7 +5,8 @@ import pytest
 
 from copilot.agent.pipeline import ChatResponse
 from copilot.eval.cases import EvalCase
-from copilot.eval.runner import COLUMNS, INSERT_SQL, grade, run
+from copilot.eval.judge import Verdict
+from copilot.eval.runner import COLUMNS, INSERT_SQL, grade, grade_with_judge, run
 from tests.conftest import FakeProvider, FakeSnowflake
 
 
@@ -122,3 +123,53 @@ def test_insert_sql_column_and_param_counts_agree():
     assert INSERT_SQL.count("%s") == len(COLUMNS)
     assert COLUMNS == ("run_id", "case_id", "kind", "passed", "score", "detail",
                        "git_sha", "prompt_version")
+
+
+# --- grade_with_judge(): the deterministic grade always runs first; the judge is
+# only consulted when it already passed and the case actually carries a criterion.
+
+
+class _JudgeProvider:
+    """Minimal LLMProvider double scripted with a Verdict, mirroring judge.py's
+    own test double so a broken judge call surfaces the same way here."""
+
+    def __init__(self, verdict):
+        self._v = verdict
+        self.calls = 0
+
+    def structured(self, system, user, schema, max_tokens=1500):
+        self.calls += 1
+        from copilot.llm.provider import LLMResult
+        return LLMResult(value=self._v, tokens_in=1, tokens_out=1)
+
+    def text(self, system, user, max_tokens=1000):  # pragma: no cover
+        raise NotImplementedError
+
+
+def test_grade_with_judge_skips_the_judge_when_no_criterion():
+    c = EvalCase(id="x", question="q", intent="smalltalk")
+    provider = _JudgeProvider(Verdict(passed=True, score=1.0, reason="n/a"))
+    passed, score, _detail = grade_with_judge(c, _resp(intent="smalltalk"), provider)
+    assert passed and score == 1.0 and provider.calls == 0
+
+
+def test_grade_with_judge_skips_the_judge_when_deterministic_grade_already_failed():
+    c = EvalCase(id="x", question="q", intent="data_query", judge="answers the count")
+    provider = _JudgeProvider(Verdict(passed=True, score=1.0, reason="n/a"))
+    passed, _score, _detail = grade_with_judge(
+        c, _resp(intent="smalltalk"), provider)  # intent mismatch: deterministic fail
+    assert not passed and provider.calls == 0
+
+
+def test_grade_with_judge_requires_both_to_pass():
+    c = EvalCase(id="x", question="q", intent="data_query", judge="answers the count")
+    provider = _JudgeProvider(Verdict(passed=False, score=0.2, reason="dodges the question"))
+    passed, _score, detail = grade_with_judge(c, _resp(intent="data_query"), provider)
+    assert not passed and "dodges the question" in detail
+
+
+def test_grade_with_judge_passes_when_both_pass():
+    c = EvalCase(id="x", question="q", intent="data_query", judge="answers the count")
+    provider = _JudgeProvider(Verdict(passed=True, score=1.0, reason="answers clearly"))
+    passed, score, _detail = grade_with_judge(c, _resp(intent="data_query"), provider)
+    assert passed and score == 1.0

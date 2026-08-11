@@ -17,6 +17,7 @@ from copilot.agent.pipeline import ChatResponse, answer_question
 from copilot.agent.prompts import PROMPT_VERSION
 from copilot.config import REPO_ROOT
 from copilot.eval.cases import EvalCase, load_cases
+from copilot.eval.judge import judge_answer
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,21 @@ def grade(case: EvalCase, resp: ChatResponse) -> tuple[bool, float, str]:
     if missing:
         return False, score, f"missing expectation: {missing[0]!r}"
     return True, score, "ok"
+
+
+def grade_with_judge(case: EvalCase, resp: ChatResponse, provider) -> tuple[bool, float, str]:
+    """`grade()` stays pure; this is the impure wrapper that spends money on a judge
+    call only when the deterministic part already passed and the case carries a
+    `judge` criterion. The case passes only if both the deterministic grade and the
+    judge pass -- a prose answer that happens to mention the right table but never
+    actually answers the question must still fail.
+    """
+    passed, score, detail = grade(case, resp)
+    if not passed or not case.judge:
+        return passed, score, detail
+    verdict = judge_answer(provider, case.question, case.judge, resp.answer)
+    combined_score = (score + verdict.score) / 2
+    return verdict.passed, combined_score, f"judge: {verdict.reason}"
 
 
 def _git_sha() -> str:
@@ -109,7 +125,7 @@ def run(cases: list[EvalCase], provider, sf, *, writer=None,
     results: list[dict] = []
     for case in cases:
         resp = answer_question(case.question, provider, sf)
-        passed, score, detail = grade(case, resp)
+        passed, score, detail = grade_with_judge(case, resp, provider)
         result = {"run_id": run_id, "case_id": case.id, "passed": passed,
                   "score": score, "detail": detail}
         results.append(result)

@@ -121,6 +121,7 @@ cases:
     question: "What does MTTR mean?"
     intent: glossary_lookup
     expect_answer_contains: ["repair"]
+    judge: "clearly states that MTTR is the average resolution_hours across closed service tickets"
 
   - id: glossary-downtime-percent
     question: "How is downtime percent calculated?"
@@ -141,11 +142,13 @@ cases:
     question: "What counts as a critical ticket?"
     intent: glossary_lookup
     expect_answer_contains: ["critical"]
+    judge: "identifies severity 'Critical' as the defining criterion, not open/closed status or category"
 
   - id: glossary-delivered-vs-planned
     question: "What's the difference between delivered and planned fractions?"
     intent: glossary_lookup
     expect_answer_contains: ["throughput"]
+    judge: "explains it as delivered fractions divided by planned fractions, the core throughput KPI"
 
   # --- smalltalk -----------------------------------------------------------
   - id: smalltalk-hello
