@@ -167,6 +167,36 @@ resource "aws_iam_role_policy" "github_deploy" {
         Action   = ["cloudfront:CreateInvalidation"]
         Resource = [aws_cloudfront_distribution.web.arn]
       },
+      {
+        # The weekly/dispatch eval run (.github/workflows/evals.yml) publishes
+        # EvalAccuracy/EvalRetrievalRecall so drift is a line on the same
+        # dashboard as live traffic. PutMetricData has no resource-level
+        # permissions -- Resource is always "*" for this action -- so the
+        # namespace condition below is the ONLY thing keeping this scoped;
+        # without it this grant would let the role write metrics into any
+        # namespace in the account, including ones other services rely on for
+        # their own alarms.
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = { "cloudwatch:namespace" = "AnalyticsCopilot" }
+        }
+      },
+      {
+        # Phase 3A deliberately withheld secretsmanager:GetSecretValue from this
+        # role -- CI had no legitimate reason to read runtime secrets. The
+        # scheduled eval run breaks that: it needs the same Snowflake
+        # credentials the ECS task uses, and the alternative (duplicating them
+        # as GitHub secrets) creates a second source of truth that silently
+        # drifts from the real ones on the next credential rotation. This
+        # widens the CI role's blast radius in exchange for that single source
+        # of truth -- a real trade-off, not a free win -- so it is scoped to
+        # exactly the one secret ARN the app itself reads, nothing broader.
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.app.arn]
+      },
     ]
   })
 }

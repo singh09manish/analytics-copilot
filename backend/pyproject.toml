@@ -16,6 +16,11 @@ dependencies = [
     "mcp>=1.2",
     "pyjwt>=2.9",
     "bcrypt>=4.2",
+    # Already present transitively via snowflake-connector-python, but the eval
+    # runner's --publish path (copilot.eval.runner) now imports it directly to
+    # call PutMetricData, so it needs to be a real, pinned direct dependency
+    # rather than riding along on someone else's transitive closure.
+    "boto3>=1.34",
 ]
 
 [dependency-groups]

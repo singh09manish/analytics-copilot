@@ -1,0 +1,112 @@
+name: evals
+on:
+  schedule: [{cron: "17 6 * * 1"}]   # Mondays 06:17 UTC -- off the hour to avoid the
+                                     # thundering herd every scheduler sees on :00
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  id-token: write   # required to request the OIDC token, schedule/workflow_dispatch only
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  # Must track aws_secretsmanager_secret.app.name / local.name in infra/secrets.tf
+  # and infra/main.tf -- Actions has no direct way to read a Terraform resource
+  # attribute, so this is duplicated here deliberately and pinned by this comment
+  # rather than silently drifting. Same pattern deploy.yml uses for ECS_CLUSTER etc.
+  SECRET_NAME: analytics-copilot/runtime
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    # workflow_dispatch is selectable from any ref, but the OIDC trust policy
+    # (infra/iam.tf) only allows the subject repo:<owner>/<repo>:ref:refs/heads/main
+    # -- same reasoning, and same guard, as deploy.yml. pull_request runs never
+    # reach the AWS-credentials step below regardless (see its own `if:`), so this
+    # guard only actually changes behavior for a workflow_dispatch off a branch.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: cd backend && uv sync
+
+      # Skip cleanly rather than fail: a fork's pull_request run has no access to
+      # repo secrets at all, and this must not turn every external contribution
+      # red on a secret it structurally cannot have. This step always runs (the
+      # `secrets` context cannot be referenced directly in a step-level `if:` --
+      # actionlint rejects it) and sets `present` as an output only when the key
+      # is non-empty; every later step's `if:` checks that output, so "no key"
+      # quietly no-ops the rest of the run instead of failing loudly on it.
+      - name: Check for ANTHROPIC_API_KEY
+        id: anthropic_key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # --- pull_request: cheap, deterministic smoke subset -----------------------
+      # No Snowflake credentials are configured on this path at all -- a PR branch
+      # cannot assume the deploy role (the OIDC trust condition only matches
+      # ref:refs/heads/main), and Task 10 deliberately does not duplicate
+      # Snowflake credentials as a separate GitHub secret just to work around
+      # that. See docs/DECISIONS.md for the resulting limitation on what this
+      # specific trigger can actually verify.
+      - name: Run eval smoke subset (pull_request)
+        if: github.event_name == 'pull_request' && steps.anthropic_key.outputs.present == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: cd backend && uv run python -m copilot.eval.runner --subset 5 | tee ../scorecard.txt
+
+      # --- schedule / workflow_dispatch: full golden set + retrieval set ---------
+      - name: Configure AWS credentials
+        if: |
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+          steps.anthropic_key.outputs.present == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Reads the same Secrets Manager secret the ECS task reads (infra/secrets.tf)
+      # instead of duplicating Snowflake credentials as a second GitHub secret, so
+      # there is one source of truth that a credential rotation only has to update
+      # once. That is why infra/iam.tf grants this role
+      # secretsmanager:GetSecretValue scoped to exactly this one secret ARN -- a
+      # permission Phase 3A deliberately withheld from it.
+      - name: Fetch Snowflake credentials
+        if: |
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+          steps.anthropic_key.outputs.present == 'true'
+        run: |
+          secret_json=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_NAME" --query SecretString --output text)
+          account=$(echo "$secret_json" | jq -r '.SNOWFLAKE_ACCOUNT')
+          key_pem=$(echo "$secret_json" | jq -r '.SNOWFLAKE_PRIVATE_KEY_PEM')
+          echo "::add-mask::$account"
+          echo "SNOWFLAKE_ACCOUNT=$account" >> "$GITHUB_ENV"
+          # The PEM is multi-line, so it needs GITHUB_ENV's heredoc form -- a bare
+          # KEY=VALUE line would silently truncate at the first newline.
+          {
+            echo "SNOWFLAKE_PRIVATE_KEY_PEM<<SNOWFLAKE_PEM_EOF"
+            echo "$key_pem"
+            echo "SNOWFLAKE_PEM_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Run full eval + retrieval sets and publish to CloudWatch
+        if: |
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+          steps.anthropic_key.outputs.present == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: cd backend && uv run python -m copilot.eval.runner --publish | tee ../scorecard.txt
+
+      - name: Upload scorecard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-scorecard
+          path: scorecard.txt
+          if-no-files-found: ignore

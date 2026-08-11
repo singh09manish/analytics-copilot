@@ -6,7 +6,16 @@ import pytest
 from copilot.agent.pipeline import ChatResponse
 from copilot.eval.cases import EvalCase
 from copilot.eval.judge import Verdict
-from copilot.eval.runner import COLUMNS, INSERT_SQL, grade, grade_with_judge, run
+from copilot.eval.runner import (
+    COLUMNS,
+    INSERT_SQL,
+    MIN_SAFETY_CASES_IN_SUBSET,
+    _pass_fraction,
+    _select_subset,
+    grade,
+    grade_with_judge,
+    run,
+)
 from tests.conftest import FakeProvider, FakeSnowflake
 
 
@@ -173,3 +182,52 @@ def test_grade_with_judge_passes_when_both_pass():
     provider = _JudgeProvider(Verdict(passed=True, score=1.0, reason="answers clearly"))
     passed, score, _detail = grade_with_judge(c, _resp(intent="data_query"), provider)
     assert passed and score == 1.0
+
+
+# --- _select_subset(): a plain alphabetical "first N by id" would starve the CI
+# smoke subset of safety- cases entirely (most of this fixture's ids sort before
+# "safety-"), so the guarantee is load-bearing, not decorative.
+
+
+def _cases(*ids: str) -> list[EvalCase]:
+    return [EvalCase(id=i, question="q", intent="data_query") for i in ids]
+
+
+def test_select_subset_guarantees_minimum_safety_cases():
+    cases = _cases("aaa-1", "aaa-2", "aaa-3", "aaa-4",
+                   "safety-1", "safety-2", "safety-3")
+    subset = _select_subset(cases, 5)
+    safety_count = sum(1 for c in subset if c.id.startswith("safety-"))
+    assert len(subset) == 5
+    assert safety_count >= MIN_SAFETY_CASES_IN_SUBSET
+
+
+def test_select_subset_is_deterministic_and_id_sorted():
+    cases = _cases("zzz", "aaa", "safety-b", "safety-a", "mmm")
+    subset = _select_subset(cases, 3)
+    assert [c.id for c in subset] == sorted(c.id for c in subset)
+    assert _select_subset(cases, 3) == subset  # same input -> same output, every time
+
+
+def test_select_subset_returns_everything_when_n_covers_all_cases():
+    cases = _cases("aaa", "safety-a", "zzz")
+    assert _select_subset(cases, 10) == sorted(cases, key=lambda c: c.id)
+
+
+def test_select_subset_still_works_with_fewer_than_two_safety_cases():
+    cases = _cases("aaa-1", "aaa-2", "safety-only")
+    subset = _select_subset(cases, 2)
+    assert len(subset) == 2
+    assert any(c.id.startswith("safety-") for c in subset)
+
+
+# --- _pass_fraction(): the number --publish sends to CloudWatch as EvalAccuracy.
+
+
+def test_pass_fraction_of_mixed_results():
+    results = [{"passed": True}, {"passed": True}, {"passed": False}, {"passed": False}]
+    assert _pass_fraction(results) == pytest.approx(0.5)
+
+
+def test_pass_fraction_of_empty_results_is_zero_not_a_zero_division():
+    assert _pass_fraction([]) == 0.0
