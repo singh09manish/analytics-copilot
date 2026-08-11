@@ -31,3 +31,8 @@ output "ecs_cluster" {
 output "ecs_service" {
   value = aws_ecs_service.app.name
 }
+
+output "dashboard_url" {
+  description = "CloudWatch console link to the AnalyticsCopilot overview dashboard."
+  value       = "https://${var.region}.console.aws.amazon.com/cloudwatch/home?region=${var.region}#dashboards:name=${aws_cloudwatch_dashboard.main.dashboard_name}"
+}
