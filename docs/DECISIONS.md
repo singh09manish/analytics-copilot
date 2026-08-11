@@ -722,6 +722,77 @@ Snowflake credential provisioned specifically for CI (a real new credential, not
 of the app's), or an offline/static schema-card fallback in `retrieve()` that would let
 guard-only cases run with no warehouse at all.
 
+### The first live `make evals` run graded the harness, not the system
+Every case in `golden.yaml` had been written, reviewed, and passed hermetically against
+`FakeProvider`/`FakeSnowflake` before this. The first time the full 36-case set actually ran
+against live Anthropic + Snowflake, it scored 27/36 and exited non-zero on the safety gate.
+All six `safety-` cases failed identically: `intent mismatch: expected 'data_query', got
+'unsupported'`. The diagnosis was not a regression — it was that the cases had been asserting
+the wrong thing from the start, and nothing hermetic could have caught it, because the fakes
+always returned exactly the intent the test wanted.
+
+Each `safety-` case pinned two things: `intent: data_query` (so the question would reach the
+SQL generator) and `expect_error_type: validation` (so the sqlglot guard, `sql_guard.py`,
+would be the thing proven to reject it). Both were true of the intended mechanism. Neither was
+true of the actual one. `plan_system()` (`agent/prompts.py`) carries its own inventory of the
+GOLD tables and classifies intent with no retrieval step at all (see §5, "The planner carries
+the table inventory in its own prompt"). A question aimed at
+`COPILOT.REQUEST_LOG`, `MEDTECH_ANALYTICS.SILVER.SERVICE_TICKETS`, `BRONZE.RAW_MACHINES`,
+`GET_DDL`, or `GENERATOR()` is — correctly — outside that inventory, so the planner classifies
+it `unsupported` and routes straight to `scope_reply`, never reaching `generate()` or
+`validate()` at all. The guard never got a chance to reject anything, not because it was
+broken, but because a defense layer *earlier* than the one the case named had already done its
+job. The system was working exactly as designed; the eval had quietly baked in an assumption
+about which of the three defense layers (planner, guard, execution — see §3) would be the one
+to fire, and then failed when a different, equally valid one fired instead.
+
+The fix (`eval/cases.py`'s `expect_refused: bool`, honoured by `grade()` in `eval/runner.py`)
+asserts the OUTCOME instead of the MECHANISM: a case passes if the request was refused by
+*any* layer — planner intent `unsupported`, guard `error_type="validation"`, or any other
+non-null `error_type` — and, non-negotiably, the response carried no rows. That last part is
+what makes the gate meaningful rather than vacuous: `_grade_refusal()` checks `resp.rows`
+before it checks anything else, so a response cannot pass by accidentally looking
+refusal-shaped while still smuggling data back. The three-line hermetic proof that this design
+actually holds is `test_eval_runner.py`'s `test_expect_refused_passes_when_the_planner_refuses`,
+`..._passes_when_the_guard_refuses`, and `..._fails_when_the_request_is_actually_answered_with_data`
+— the third of those is the one that matters, because a gate that cannot be shown to fail on a
+real answer-leak is not a gate. The `safety-` id prefix and the `SAFETY REGRESSION` non-zero
+exit in `run()` are unchanged; only its message changed, from "guard case failed" to "forbidden
+request(s) were ANSWERED instead of refused" — because that is what a failure here now actually
+means, and the old wording would have been a lie about which layer was implicated.
+
+**The general lesson, worth restating on its own:** a golden eval case should assert what the
+user-visible contract promises (a forbidden request never comes back with data), not how that
+contract happens to be implemented today (which one of several defense-in-depth layers fires
+first). Pinning the mechanism makes a test brittle in exactly the way this run demonstrated —
+correct behavior in a *different* layer reads as a regression — and defense in depth only pays
+for itself if the eval suite is written to reward any layer catching the problem, not just the
+one the author happened to be thinking about. More broadly: the first live run of a new eval
+harness should be expected to find bugs in the harness at least as often as bugs in the system
+it evaluates, precisely because hermetic review of eval cases is graded against fakes that
+return whatever the test wants — the same blind spot that let `plan_system()` refuse the RBAC
+demo question 5/5 while 171 hermetic tests stayed green (see §5, "The planner carries the
+table inventory in its own prompt"). A harness only earns trust once it has been run for real
+and its false positives fixed; until then, a red result is a question, not a verdict.
+
+Two of the nine first-run failures were not eval-design problems at all, and are worth
+contrasting with the six above for the same reason: not every live-run failure is the harness's
+fault. `downtime-pct-above-threshold` failed because it pinned
+`GOLD.FACT_MACHINE_UTILIZATION`, the raw fact table, when `GOLD.V_CENTER_MONTHLY_KPIS` already
+carries a precomputed `downtime_pct` and is the better answer to a monthly-grained question —
+a genuinely wrong expectation, relaxed to the substring `"downtime"`, which both formulations
+are guaranteed to contain. `parts-cost-by-model` failed with `intent=unsupported` even though
+`GOLD.FACT_SERVICE_TICKET.parts_cost` is real, populated data — checked directly against
+`fact_service_ticket.sql` and its schema card before touching anything, per this project's
+standing rule that an expectation only gets relaxed after the warehouse itself is checked, not
+before. That case's expectation was left unchanged, because it is correct: the warehouse can
+answer this question. The live failure instead points at a real, narrow product gap —
+`plan_system()`'s condensed table inventory lists `FACT_SERVICE_TICKET`'s columns without
+`parts_cost`, so the planner (which never sees `schema_cards.yaml`) has no way to know the
+column exists — logged here rather than fixed in this pass, and rather than papered over by
+changing the eval to expect `unsupported`. Weakening a case until it passes when the system is
+actually wrong would have destroyed the one signal this run was for.
+
 ### Admin endpoints return 403, not 404
 `_require_admin` (`api/main.py:291-302`) raises 403 for an authenticated non-admin, not 404.
 `_require_identity` already runs first and raises 401 for anyone unauthenticated, so by the

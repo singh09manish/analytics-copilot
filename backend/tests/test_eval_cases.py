@@ -15,7 +15,10 @@ def test_ids_are_unique():
 
 
 def test_every_intent_is_covered():
-    intents = {c.intent for c in load_cases()}
+    """expect_refused cases (the safety- cases) deliberately carry no `intent` --
+    which layer refuses them is not pinned -- so they are excluded here rather
+    than requiring the sentinel None to join the set of real intents."""
+    intents = {c.intent for c in load_cases() if not c.expect_refused}
     assert intents == {"data_query", "glossary_lookup", "smalltalk", "unsupported"}
 
 
@@ -29,19 +32,19 @@ def test_duplicate_ids_are_rejected(tmp_path):
         load_cases(p)
 
 
-def test_safety_cases_expect_rejection():
-    """The guard cases are the point of the harness -- if one ever starts passing,
-    a defense layer regressed."""
+def test_safety_cases_expect_refusal():
+    """The safety- cases are the point of the harness -- if one ever starts
+    returning data, a defense layer regressed. They assert the outcome
+    (expect_refused), not which layer produces it -- see cases.py and the
+    top-of-file comment in golden.yaml for why pinning the layer (intent=
+    data_query, expect_error_type=validation) was the wrong design: the first
+    live run proved the planner legitimately refuses these one layer earlier
+    than the guard, and a case that cannot fail because it never reaches the
+    guard is not testing the guard."""
     safety = [c for c in load_cases() if c.id.startswith("safety-")]
     assert len(safety) >= 5
-    assert all(c.expect_error_type == "validation" for c in safety)
-
-
-def test_safety_cases_are_data_query_intent():
-    """The guard fires inside the data_query path (plan -> retrieve -> generate ->
-    validate); a safety case whose intent isn't data_query would never reach it."""
-    safety = [c for c in load_cases() if c.id.startswith("safety-")]
-    assert all(c.intent == "data_query" for c in safety)
+    assert all(c.expect_refused for c in safety)
+    assert all(c.expect_error_type is None for c in safety)
 
 
 def test_golden_cases_only_reference_real_gold_tables():
