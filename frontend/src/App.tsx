@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import Admin from "./Admin";
 import { AuthExpiredError, sendChat, sendFeedback } from "./api";
 import { clearAuth, getAuth, type AuthState } from "./auth";
 import Login from "./Login";
@@ -25,6 +26,9 @@ function newConversationId(): string {
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState | null>(getAuth());
+  // Chat is always the default view -- the toggle itself only renders for admins
+  // (see the header below), so an analyst never sees or reaches "admin" here.
+  const [view, setView] = useState<"chat" | "admin">("chat");
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -45,8 +49,15 @@ export default function App() {
     clearAuth();
     setAuthState(null);
     setMessages([]);
+    setView("chat");
     conversationId.current = newConversationId();
   }
+
+  // Defense in depth alongside the role check that hides the toggle below: the
+  // admin console never renders for a non-admin, even if `view` were somehow
+  // left over as "admin" from a prior session (e.g. a fresh login as analyst
+  // right after an admin signed out on the same tab).
+  const showAdmin = view === "admin" && authState.role === "admin";
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -97,71 +108,91 @@ export default function App() {
         <h1>Analytics Copilot</h1>
         <span className="sub">Ask about machines, centers, utilization, service tickets</span>
         <div className="header-right">
+          {authState.role === "admin" && (
+            <div className="tabs">
+              <button
+                className={view === "chat" ? "tab active" : "tab"}
+                onClick={() => setView("chat")}
+              >
+                Chat
+              </button>
+              <button
+                className={view === "admin" ? "tab active" : "tab"}
+                onClick={() => setView("admin")}
+              >
+                Admin
+              </button>
+            </div>
+          )}
           <span className={`badge ${authState.role}`}>{authState.role}</span>
           <button className="linklike" onClick={logout}>
             sign out
           </button>
         </div>
       </header>
-      <main>
-        {messages.length === 0 && (
-          <div className="hint">
-            Try: <em>Which 5 centers had the most downtime hours last quarter?</em>
-          </div>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className={`msg ${m.role} ${m.data?.error_type || m.error ? "err" : ""}`}>
-            <p>{m.text}</p>
-            {m.data?.sql && (
-              <details>
-                <summary>SQL</summary>
-                <pre>{m.data.sql}</pre>
-              </details>
-            )}
-            {m.data && m.data.rows.length > 0 && (
-              <div className="tablewrap">
-                <table>
-                  <thead>
-                    <tr>{m.data.columns.map((c) => <th key={c}>{c}</th>)}</tr>
-                  </thead>
-                  <tbody>
-                    {m.data.rows.slice(0, 20).map((r, ri) => (
-                      <tr key={ri}>{r.map((v, ci) => <td key={ci}>{String(v ?? "")}</td>)}</tr>
-                    ))}
-                  </tbody>
-                </table>
+      {showAdmin ? <Admin /> : (
+        <>
+          <main>
+            {messages.length === 0 && (
+              <div className="hint">
+                Try: <em>Which 5 centers had the most downtime hours last quarter?</em>
               </div>
             )}
-            {m.data && m.data.assumptions.length > 0 && (
-              <details>
-                <summary>Assumptions</summary>
-                <ul>{m.data.assumptions.map((a, ai) => <li key={ai}>{a}</li>)}</ul>
-              </details>
-            )}
-            {m.data?.request_id && (
-              <div className="fb">
-                {m.feedback
-                  ? <span className="fb-done">feedback: {m.feedback === "up" ? "👍" : "👎"}</span>
-                  : <>
-                      <button disabled={m.feedbackPending} onClick={() => giveFeedback(i, "up")}>👍</button>
-                      <button disabled={m.feedbackPending} onClick={() => giveFeedback(i, "down")}>👎</button>
-                    </>}
+            {messages.map((m, i) => (
+              <div key={i} className={`msg ${m.role} ${m.data?.error_type || m.error ? "err" : ""}`}>
+                <p>{m.text}</p>
+                {m.data?.sql && (
+                  <details>
+                    <summary>SQL</summary>
+                    <pre>{m.data.sql}</pre>
+                  </details>
+                )}
+                {m.data && m.data.rows.length > 0 && (
+                  <div className="tablewrap">
+                    <table>
+                      <thead>
+                        <tr>{m.data.columns.map((c) => <th key={c}>{c}</th>)}</tr>
+                      </thead>
+                      <tbody>
+                        {m.data.rows.slice(0, 20).map((r, ri) => (
+                          <tr key={ri}>{r.map((v, ci) => <td key={ci}>{String(v ?? "")}</td>)}</tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {m.data && m.data.assumptions.length > 0 && (
+                  <details>
+                    <summary>Assumptions</summary>
+                    <ul>{m.data.assumptions.map((a, ai) => <li key={ai}>{a}</li>)}</ul>
+                  </details>
+                )}
+                {m.data?.request_id && (
+                  <div className="fb">
+                    {m.feedback
+                      ? <span className="fb-done">feedback: {m.feedback === "up" ? "👍" : "👎"}</span>
+                      : <>
+                          <button disabled={m.feedbackPending} onClick={() => giveFeedback(i, "up")}>👍</button>
+                          <button disabled={m.feedbackPending} onClick={() => giveFeedback(i, "down")}>👎</button>
+                        </>}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        ))}
-        {busy && <div className="msg assistant busy">Thinking…</div>}
-        <div ref={bottom} />
-      </main>
-      <form onSubmit={submit}>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask a question about the fleet…"
-          disabled={busy}
-        />
-        <button disabled={busy || !input.trim()}>Send</button>
-      </form>
+            ))}
+            {busy && <div className="msg assistant busy">Thinking…</div>}
+            <div ref={bottom} />
+          </main>
+          <form onSubmit={submit}>
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask a question about the fleet…"
+              disabled={busy}
+            />
+            <button disabled={busy || !input.trim()}>Send</button>
+          </form>
+        </>
+      )}
     </div>
   );
 }
