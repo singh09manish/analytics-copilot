@@ -3,10 +3,9 @@ on:
   schedule: [{cron: "17 6 * * 1"}]   # Mondays 06:17 UTC -- off the hour to avoid the
                                      # thundering herd every scheduler sees on :00
   workflow_dispatch:
-  pull_request:
 
 permissions:
-  id-token: write   # required to request the OIDC token, schedule/workflow_dispatch only
+  id-token: write   # required to request the OIDC token
   contents: read
 
 env:
@@ -20,24 +19,27 @@ env:
 jobs:
   evals:
     runs-on: ubuntu-latest
+    # A live run (Anthropic + Snowflake, full golden + retrieval sets) normally
+    # finishes in a couple of minutes; this is a ceiling against a hung step, not
+    # an expected duration.
+    timeout-minutes: 20
     # workflow_dispatch is selectable from any ref, but the OIDC trust policy
     # (infra/iam.tf) only allows the subject repo:<owner>/<repo>:ref:refs/heads/main
-    # -- same reasoning, and same guard, as deploy.yml. pull_request runs never
-    # reach the AWS-credentials step below regardless (see its own `if:`), so this
-    # guard only actually changes behavior for a workflow_dispatch off a branch.
+    # -- same reasoning, and same guard, as deploy.yml.
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: cd backend && uv sync
 
-      # Skip cleanly rather than fail: a fork's pull_request run has no access to
-      # repo secrets at all, and this must not turn every external contribution
-      # red on a secret it structurally cannot have. This step always runs (the
-      # `secrets` context cannot be referenced directly in a step-level `if:` --
-      # actionlint rejects it) and sets `present` as an output only when the key
-      # is non-empty; every later step's `if:` checks that output, so "no key"
-      # quietly no-ops the rest of the run instead of failing loudly on it.
+      # This workflow has no pull_request trigger (see the removal note below),
+      # so every run that reaches here is schedule or workflow_dispatch, and both
+      # get a real key from repo secrets. This check remains only as a defensive
+      # skip for the case where the secret is unset (a fresh repo bootstrap, a
+      # revoked key) -- it must not turn a missing key into a hard failure here.
+      # `present` is exposed as a step output, not inlined into a later step's
+      # `if:`, because the `secrets` context cannot be referenced directly in a
+      # step-level `if:` -- actionlint rejects it.
       - name: Check for ANTHROPIC_API_KEY
         id: anthropic_key
         env:
@@ -47,20 +49,29 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # --- pull_request: cheap, deterministic smoke subset -----------------------
-      # No Snowflake credentials are configured on this path at all -- a PR branch
-      # cannot assume the deploy role (the OIDC trust condition only matches
-      # ref:refs/heads/main), and Task 10 deliberately does not duplicate
-      # Snowflake credentials as a separate GitHub secret just to work around
-      # that. See docs/DECISIONS.md for the resulting limitation on what this
-      # specific trigger can actually verify.
-      - name: Run eval smoke subset (pull_request)
-        if: github.event_name == 'pull_request' && steps.anthropic_key.outputs.present == 'true'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: cd backend && uv run python -m copilot.eval.runner --subset 5 | tee ../scorecard.txt
-
       # --- schedule / workflow_dispatch: full golden set + retrieval set ---------
+      #
+      # Final review, Critical finding C3: this workflow used to also carry a
+      # `pull_request:` trigger running `--subset 5` as a cheap per-PR smoke
+      # check. It could not work and has been removed. A PR branch cannot assume
+      # the deploy role below -- the OIDC trust condition in infra/iam.tf only
+      # matches ref:refs/heads/main -- so that path had no Snowflake credentials
+      # at all, while `retrieve()` (retrieval.py) unconditionally needs a live
+      # Snowflake connection for schema-card lookup before a data_query case's
+      # SQL is even generated, let alone validated. All five subset cases,
+      # including the safety- cases the subset exists to protect, failed with
+      # error_type="snowflake" without ever reaching the guard -- and only forks
+      # are excluded from repo secrets, so a same-repo PR still received
+      # ANTHROPIC_API_KEY: every ordinary PR spent real Anthropic API calls to
+      # manufacture five guaranteed FAILs, which (until the `shell: bash` fix
+      # just below, C1) still reported green. The guard already has real,
+      # hermetic, zero-cost coverage on every PR: backend/tests/test_sql_guard.py,
+      # run by ci.yml, needs no warehouse and no API key. This workflow now only
+      # ever runs against a live, deployed stack (schedule, or workflow_dispatch
+      # off main) where Snowflake is actually reachable. The runner's `--subset N`
+      # flag (runner.py) is kept regardless -- still useful for a cheap manual
+      # `workflow_dispatch` run against that live stack -- even though the
+      # default dispatch here runs the full set via `--publish`.
       - name: Configure AWS credentials
         if: |
           (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
@@ -95,10 +106,17 @@ jobs:
             echo "SNOWFLAKE_PEM_EOF"
           } >> "$GITHUB_ENV"
 
+      # Final review, Critical finding C1: GitHub's default Linux shell is
+      # `bash -e {0}` with NO pipefail, so `runner | tee scorecard.txt` discarded
+      # the runner's own exit code -- a real SAFETY REGRESSION (runner.py's
+      # sys.exit(1) when a safety- case fails) printed to the log while this step,
+      # and the job, still reported success. `shell: bash` opts this step into
+      # `bash -eo pipefail {0}` instead, so a non-zero runner exit now fails it.
       - name: Run full eval + retrieval sets and publish to CloudWatch
         if: |
           (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
           steps.anthropic_key.outputs.present == 'true'
+        shell: bash
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: cd backend && uv run python -m copilot.eval.runner --publish | tee ../scorecard.txt
