@@ -23,3 +23,8 @@ terraform.tfstate.*
 *.tfvars
 !infra/terraform.tfvars.example
 crash.log
+
+# Interview prep material (panel names, personal strategy) must never live in the project repo --
+# it is shared with interviewers. Kept in the parent directory instead.
+study-pack.html
+docs/study-pack.html
