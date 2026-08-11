@@ -1,0 +1,45 @@
+# Retrieval-only eval set: scores which GOLD.* schema cards retrieval.retrieve()
+# puts in front of the model, independent of whether the SQL or answer it later
+# produces is correct. A missing join table is the classic silent RAG failure --
+# the model never had the card, so the SQL comes back plausible and wrong.
+#
+# utilization-worst-delivery-by-model is a known real Phase 1 failure: this
+# cross-table question missed GOLD.DIM_MACHINE until a join hint was added to
+# GOLD.FACT_MACHINE_UTILIZATION's card (see data/ai_library/schema_cards.yaml).
+# It stays here as a permanent regression check.
+cases:
+  - id: utilization-worst-delivery-by-model
+    question: "What is the worst delivery percentage by machine model?"
+    must_retrieve: ["GOLD.FACT_MACHINE_UTILIZATION", "GOLD.DIM_MACHINE"]
+
+  - id: parts-cost-by-model
+    question: "What is the total parts cost by machine model?"
+    must_retrieve: ["GOLD.FACT_SERVICE_TICKET", "GOLD.DIM_MACHINE"]
+
+  - id: machines-per-region
+    question: "How many machines do we have per region?"
+    must_retrieve: ["GOLD.DIM_MACHINE", "GOLD.DIM_TREATMENT_CENTER"]
+
+  - id: open-tickets-by-model
+    question: "How many open critical tickets does each machine model have?"
+    must_retrieve: ["GOLD.FACT_SERVICE_TICKET", "GOLD.DIM_MACHINE"]
+
+  - id: downtime-by-center
+    question: "Which centers had the most downtime last quarter?"
+    must_retrieve: ["GOLD.FACT_MACHINE_UTILIZATION"]
+
+  - id: mttr-by-severity
+    question: "What is the mean time to repair by severity?"
+    must_retrieve: ["GOLD.FACT_SERVICE_TICKET"]
+
+  - id: centers-by-region
+    question: "How many treatment centers are in each region?"
+    must_retrieve: ["GOLD.DIM_TREATMENT_CENTER"]
+
+  - id: monthly-kpi-trend
+    question: "Show me the monthly delivery percentage trend by center."
+    must_retrieve: ["GOLD.V_CENTER_MONTHLY_KPIS"]
+
+  - id: oldest-machines
+    question: "Which machines are the oldest by install date?"
+    must_retrieve: ["GOLD.DIM_MACHINE"]
