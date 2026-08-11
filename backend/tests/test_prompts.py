@@ -112,12 +112,17 @@ def test_plan_system_table_inventory_columns_exist_in_schema_cards():
                 "data/ai_library/schema_cards.yaml -- verify the real column "
                 "name against the warehouse and fix the prompt")
     # A sanity floor on the parser itself, not just the columns it found: today's
-    # inventory has 22 literal column names across DIM_TREATMENT_CENTER (7),
-    # DIM_MACHINE (6), DIM_DATE (7), and FACT_SERVICE_TICKET (2). A count far
-    # below that means the bullet/column parser broke, not that the prompt got
-    # shorter -- and a silently-empty parser would make every assertion above
-    # vacuously true.
-    assert checked >= 15, (
+    # inventory has 49 literal column names across DIM_TREATMENT_CENTER (8),
+    # DIM_MACHINE (7), DIM_DATE (7), FACT_MACHINE_UTILIZATION (8),
+    # FACT_SERVICE_TICKET (10), and V_CENTER_MONTHLY_KPIS (9) -- every GOLD
+    # table now names its columns explicitly instead of hiding them behind
+    # prose ("planned/delivered fractions", "pre-aggregated monthly KPIs"),
+    # which is what let `parts_cost` go missing and fail the
+    # parts-cost-by-model golden case as `unsupported`. A count far below 49
+    # means the bullet/column parser broke, not that the prompt got shorter --
+    # and a silently-empty parser would make every assertion above vacuously
+    # true.
+    assert checked >= 40, (
         f"only parsed {checked} column names out of plan_system()'s table "
-        "inventory; expected at least 15 -- the bullet parser in this test may "
+        "inventory; expected at least 40 -- the bullet parser in this test may "
         "be broken rather than the prompt actually having fewer columns")

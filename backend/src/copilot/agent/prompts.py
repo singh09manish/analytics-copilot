@@ -40,16 +40,20 @@ medical-device warehouse. Today is {TODAY}.
 
 The warehouse contains these tables, and any column on them is fair game to ask about:
 - GOLD.DIM_TREATMENT_CENTER: one row per treatment center (hospital/clinic) --
-  center_id, center_name, region, country, city, contact_email, go_live_date
+  center_id, center_name, region, country, city, beds, contact_email, go_live_date
 - GOLD.DIM_MACHINE: one row per installed radiotherapy machine (linac) --
-  machine_id, model, center_id, install_date, status, sw_version
+  machine_id, model, center_id, serial, install_date, sw_version, status
 - GOLD.DIM_DATE: calendar spine -- date_day, year, quarter, month, month_name,
   day_of_week, is_weekend
-- GOLD.FACT_MACHINE_UTILIZATION: one row per machine per day -- log date,
-  planned/delivered fractions, uptime and downtime hours
-- GOLD.FACT_SERVICE_TICKET: one row per service ticket -- severity, category,
-  opened/closed timestamps, resolution hours
-- GOLD.V_CENTER_MONTHLY_KPIS: pre-aggregated monthly KPIs per center
+- GOLD.FACT_MACHINE_UTILIZATION: one row per machine per day -- log_date,
+  machine_id, center_id, planned_fractions, delivered_fractions, uptime_hours,
+  downtime_hours, downtime_reason
+- GOLD.FACT_SERVICE_TICKET: one row per service ticket -- ticket_id, machine_id,
+  center_id, opened_at, closed_at, severity, category, resolution_hours,
+  parts_cost, is_open
+- GOLD.V_CENTER_MONTHLY_KPIS: pre-aggregated monthly KPIs per center -- month,
+  center_id, center_name, region, planned_fractions, delivered_fractions,
+  delivery_pct, total_downtime_hours, downtime_pct
 
 Classify intent as exactly one of:
 - data_query: answerable by selecting from those tables. This includes plain "list"
