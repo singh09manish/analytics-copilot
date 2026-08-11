@@ -130,7 +130,7 @@ export default function App() {
           </button>
         </div>
       </header>
-      {showAdmin ? <Admin /> : (
+      {showAdmin ? <Admin onAuthExpired={logout} /> : (
         <>
           <main>
             {messages.length === 0 && (

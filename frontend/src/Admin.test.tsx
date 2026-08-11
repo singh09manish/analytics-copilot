@@ -119,3 +119,22 @@ test("a fetch failure shows a plain error line, not a crash", async () => {
 
   expect(await screen.findByText(/Couldn't load admin data/)).toBeDefined();
 });
+
+// Final review, Minor finding M4: a 401 loading admin data previously rendered
+// as "Couldn't load admin data: AuthExpiredError: session expired" body text,
+// the same as any other fetch failure -- unlike App.tsx's own chat path, which
+// already treats a 401 as a session event and logs out. An admin whose token
+// expired mid-session saw a dead console instead of the login screen every
+// other 401 already sends them to.
+test("a 401 while loading admin data logs the user out, not a page-text error", async () => {
+  setAuth({ token: fakeJwt(), role: "admin", email: "admin@demo" });
+  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(401, { detail: "invalid token" }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<App />);
+  fireEvent.click(screen.getByRole("button", { name: /admin/i }));
+
+  await waitFor(() => expect(screen.getByPlaceholderText("password")).toBeDefined());
+  expect(localStorage.getItem("copilot_auth")).toBeNull();
+  expect(screen.queryByText(/Couldn't load admin data/)).toBeNull();
+});

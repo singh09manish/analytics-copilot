@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getAdminFeedback, getAdminOverview, getAdminRequests } from "./api";
+import { AuthExpiredError, getAdminFeedback, getAdminOverview, getAdminRequests } from "./api";
 import type { AdminFeedbackRow, AdminOverview, AdminRequestRow } from "./types";
 
 const SQL_PREVIEW_LEN = 80;
@@ -13,7 +13,17 @@ function formatPct(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;
 }
 
-export default function Admin() {
+interface AdminProps {
+  // Called instead of rendering an error line when a load 401s. Mirrors how
+  // App.tsx's submit() already treats AuthExpiredError from the chat path: a
+  // stale/expired token is a session event (log the user out, back to Login),
+  // not page content -- rendering "Couldn't load admin data: AuthExpiredError:
+  // session expired" as body text left a signed-out admin staring at a dead
+  // console instead of the login screen every other 401 already sends them to.
+  onAuthExpired: () => void;
+}
+
+export default function Admin({ onAuthExpired }: AdminProps) {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [requests, setRequests] = useState<AdminRequestRow[] | null>(null);
   const [feedback, setFeedback] = useState<AdminFeedbackRow[] | null>(null);
@@ -33,6 +43,10 @@ export default function Admin() {
       })
       .catch((err) => {
         if (cancelled) return;
+        if (err instanceof AuthExpiredError) {
+          onAuthExpired();
+          return;
+        }
         setError(`Couldn't load admin data: ${err}`);
       })
       .finally(() => {
@@ -41,7 +55,7 @@ export default function Admin() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [onAuthExpired]);
 
   if (loading) return <div className="admin-status">Loading…</div>;
   if (error) return <div className="admin-status admin-error">{error}</div>;
