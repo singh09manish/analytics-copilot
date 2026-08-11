@@ -193,6 +193,57 @@ FEEDBACK_INSERT_SQL = (
     f"({', '.join(FEEDBACK_COLUMNS)}) "
     f"VALUES ({', '.join(['%s'] * len(FEEDBACK_COLUMNS))})")
 
+# Admin Console reads. All three go through state.sf_admin (COPILOT_ADMIN) --
+# COPILOT_APP_RO cannot read these tables at the Snowflake grant level (see the
+# comment above the COPILOT_ADMIN grant in warehouse/bootstrap.sql), so running
+# them on the wrong session would pass hermetically and fail live.
+#
+# ADMIN_OVERVIEW_SQL uses GROUPING SETS to get the grand total (intent IS NULL)
+# and the per-intent breakdown out of REQUEST_LOG in one query, as the brief
+# asks for, rather than one query per number.
+ADMIN_OVERVIEW_SQL = (
+    "SELECT intent, COUNT(*) AS total, "
+    "SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors, "
+    "MEDIAN(e2e_ms) AS p50_latency_ms "
+    "FROM MEDTECH_ANALYTICS.COPILOT.REQUEST_LOG "
+    "GROUP BY GROUPING SETS ((), (intent))")
+ADMIN_FEEDBACK_COUNTS_SQL = (
+    "SELECT rating, COUNT(*) AS cnt "
+    "FROM MEDTECH_ANALYTICS.COPILOT.FEEDBACK GROUP BY rating")
+
+# Console-facing column subsets (request_id, created_at, ... below) are our own
+# JSON contract, not a mirror of the full table -- but every name in them must
+# still be a real column from warehouse/bootstrap.sql's REQUEST_LOG/FEEDBACK DDL.
+ADMIN_REQUESTS_COLUMNS = ("request_id", "created_at", "user_role", "intent", "status",
+                          "error_type", "e2e_ms", "sql_text", "question")
+ADMIN_REQUESTS_SQL = (
+    f"SELECT {', '.join(ADMIN_REQUESTS_COLUMNS)} "
+    "FROM MEDTECH_ANALYTICS.COPILOT.REQUEST_LOG ORDER BY created_at DESC LIMIT %s")
+ADMIN_FEEDBACK_COLUMNS = ("feedback_id", "created_at", "conversation_id", "request_id",
+                         "rating", "comment")
+ADMIN_FEEDBACK_SQL = (
+    f"SELECT {', '.join(ADMIN_FEEDBACK_COLUMNS)} "
+    "FROM MEDTECH_ANALYTICS.COPILOT.FEEDBACK ORDER BY created_at DESC LIMIT %s")
+
+_ADMIN_LIMIT_MIN = 1
+_ADMIN_LIMIT_MAX = 500
+
+
+def _clamp_admin_limit(limit: int) -> int:
+    return max(_ADMIN_LIMIT_MIN, min(_ADMIN_LIMIT_MAX, limit))
+
+
+def _rows_to_dicts(cols: list[str], rows: list[tuple], wanted: tuple[str, ...]) -> list[dict]:
+    """Map a Snowflake result to our JSON contract by column name, not position.
+
+    Snowflake returns unquoted identifiers upper-cased, so this looks columns up
+    case-insensitively; a name missing from the result (e.g. a fake test double
+    that returns unrelated canned columns) maps to None rather than raising.
+    """
+    idx = {c.upper(): i for i, c in enumerate(cols)}
+    return [{name: (row[idx[name.upper()]] if name.upper() in idx else None) for name in wanted}
+            for row in rows]
+
 
 def _scoped_conversation_id(email: str, conversation_id: str | None) -> str | None:
     """Checkpointer thread key: the client's conversation_id namespaced by identity.
@@ -235,6 +286,20 @@ def _require_identity(request: Request) -> tuple[str, str]:
         return payload["role"], payload["sub"]
     except (auth.AuthError, KeyError) as e:
         raise HTTPException(status_code=401, detail=f"invalid token: {e}") from e
+
+
+def _require_admin(identity: tuple[str, str] = Depends(_require_identity)) -> tuple[str, str]:
+    """Gate for the admin-only ops endpoints, built on top of `_require_identity`.
+
+    An anonymous caller never reaches the role check: `_require_identity` already
+    raises 401 first. An authenticated non-admin gets 403, not 404 -- the resource
+    exists and the caller is authenticated, so pretending otherwise is security
+    theatre that costs debuggability.
+    """
+    role, _email = identity
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    return identity
 
 
 @app.get("/healthz")
@@ -324,3 +389,72 @@ def feedback(req: FeedbackRequest,
     except Exception as e:
         raise HTTPException(status_code=503, detail="feedback store unavailable") from e
     return {"status": "recorded"}
+
+
+@app.get("/api/admin/overview")
+def admin_overview(_identity: tuple[str, str] = Depends(_require_admin)) -> dict:
+    state = _deps()
+    try:
+        cols, rows = state.sf_admin.run_query(ADMIN_OVERVIEW_SQL)
+        fcols, frows = state.sf_admin.run_query(ADMIN_FEEDBACK_COUNTS_SQL)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="admin store unavailable") from e
+
+    idx = {c.upper(): i for i, c in enumerate(cols)}
+    total_requests = 0
+    errors = 0
+    p50_latency_ms = 0
+    by_intent: dict[str, int] = {}
+    for row in rows:
+        intent = row[idx["INTENT"]] if "INTENT" in idx else None
+        total = int(row[idx["TOTAL"]] or 0) if "TOTAL" in idx and row[idx["TOTAL"]] is not None else 0
+        if intent is None:
+            total_requests = total
+            errors = int(row[idx["ERRORS"]] or 0) if "ERRORS" in idx else 0
+            p50_latency_ms = row[idx["P50_LATENCY_MS"]] if "P50_LATENCY_MS" in idx else 0
+        else:
+            by_intent[str(intent)] = total
+
+    fidx = {c.upper(): i for i, c in enumerate(fcols)}
+    feedback_up = feedback_down = 0
+    for row in frows:
+        rating = row[fidx["RATING"]] if "RATING" in fidx else None
+        cnt = int(row[fidx["CNT"]] or 0) if "CNT" in fidx else 0
+        if rating == "up":
+            feedback_up = cnt
+        elif rating == "down":
+            feedback_down = cnt
+
+    error_rate = (errors / total_requests) if total_requests else 0.0
+    return {
+        "total_requests": total_requests,
+        "error_rate": error_rate,
+        "p50_latency_ms": p50_latency_ms or 0,
+        "feedback_up": feedback_up,
+        "feedback_down": feedback_down,
+        "by_intent": by_intent,
+    }
+
+
+@app.get("/api/admin/requests")
+def admin_requests(limit: int = 50,
+                   _identity: tuple[str, str] = Depends(_require_admin)) -> list[dict]:
+    state = _deps()
+    n = _clamp_admin_limit(limit)
+    try:
+        cols, rows = state.sf_admin.run_query(ADMIN_REQUESTS_SQL, (n,))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="admin store unavailable") from e
+    return _rows_to_dicts(cols, rows, ADMIN_REQUESTS_COLUMNS)
+
+
+@app.get("/api/admin/feedback")
+def admin_feedback(limit: int = 50,
+                   _identity: tuple[str, str] = Depends(_require_admin)) -> list[dict]:
+    state = _deps()
+    n = _clamp_admin_limit(limit)
+    try:
+        cols, rows = state.sf_admin.run_query(ADMIN_FEEDBACK_SQL, (n,))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="admin store unavailable") from e
+    return _rows_to_dicts(cols, rows, ADMIN_FEEDBACK_COLUMNS)
