@@ -31,14 +31,23 @@ export default function Login({ onLogin }: { onLogin: (a: AuthState) => void }) 
   return (
     <div className="login-shell">
       <form onSubmit={submit} className="login-card">
+        <span className="legend">Fleet Console</span>
         <h1>Analytics Copilot</h1>
         <p className="sub">Sign in to query the warehouse</p>
-        <input value={email} onChange={(e) => setEmail(e.target.value)}
-               placeholder="email" autoComplete="username" />
-        <input type="password" value={password}
-               onChange={(e) => setPassword(e.target.value)} placeholder="password"
-               autoComplete="current-password" />
-        {error && <div className="login-error">{error}</div>}
+
+        <div className="field">
+          <label className="legend" htmlFor="login-email">Operator</label>
+          <input id="login-email" value={email} onChange={(e) => setEmail(e.target.value)}
+                 placeholder="email" autoComplete="username" />
+        </div>
+        <div className="field">
+          <label className="legend" htmlFor="login-password">Key</label>
+          <input id="login-password" type="password" value={password}
+                 onChange={(e) => setPassword(e.target.value)} placeholder="password"
+                 autoComplete="current-password" />
+        </div>
+
+        {error && <div className="login-error" role="alert">{error}</div>}
         <button disabled={busy || !password}>Sign in</button>
         <p className="hint-small">analyst@demo sees masked PII · admin@demo sees all</p>
       </form>

@@ -9,8 +9,14 @@ export interface ChatResponse {
   intent: string | null;
   request_id: string | null;
   // "vector" (Cortex) or "keyword" (fallback ranking). Optional: older backends
-  // omit it, and the UI does not render it today.
+  // omit it.
   retrieval_mode?: string | null;
+  // Already emitted by the backend's ChatResponse (agent/pipeline.py); declared
+  // here so the instrument strip can render real token telemetry instead of an
+  // invented number. Optional because an older backend may omit them -- the UI
+  // drops the chip rather than showing a zero it cannot vouch for.
+  tokens_in?: number;
+  tokens_out?: number;
 }
 
 export interface LoginResponse {
