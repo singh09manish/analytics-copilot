@@ -20,9 +20,16 @@ role-scoped Snowflake session
 returns masked or real PII depending on who's asking. Every request is
 written to `COPILOT.REQUEST_LOG`, and every answer can be thumbs-up/down'd
 with a comment into `COPILOT.FEEDBACK`. The app is deployed to AWS (Terraform,
-ECS Fargate, CloudFront) — see "Deploying to AWS" below. Still ahead: an eval
-harness and an admin console; CloudWatch telemetry has started landing on
-`feat/phase3b-evals`.
+ECS Fargate, CloudFront) — see "Deploying to AWS" below. An admin-only
+**Admin Console** (`GET /api/admin/overview|requests|feedback`, gated 403 for
+anyone else) surfaces request/feedback tiles and a browser over both tables. An
+**eval harness** (`make evals`) runs a ~30-case golden set through the real
+pipeline — deterministic grading plus an LLM judge for prose answers, a
+separate retrieval-only recall@k pass, a CI smoke subset on every PR, and a
+weekly full run that publishes accuracy to CloudWatch — see "Evals" below.
+**CloudWatch telemetry** — a dashboard and two alarms over the EMF metrics the
+app already emits — completes the loop; see `terraform output dashboard_url`
+after `make aws-up`.
 
 ## Documentation
 
@@ -65,14 +72,16 @@ question) — and tagged `v0.2-agent`. Phase 3A (AWS deployment) is live and tag
 that same RBAC masking re-verified end to end through CloudFront -> ALB -> Fargate -> MCP ->
 Snowflake on the deployed stack.
 
-**In progress, not done.** Phase 3B (eval harness, CloudWatch dashboards/alarms, admin
-console) is being built on `feat/phase3b-evals`. Telemetry has landed — EMF metrics are
-emitted per request (answer outcome, latency, retrieval mode, tokens) — but the eval harness
-and admin console have not started yet.
+**In progress, not yet tagged.** Phase 3B (eval harness, CloudWatch dashboard/alarms, admin
+console) is code-complete on `feat/phase3b-evals` — all three pieces described above are
+built and unit/hermetic-tested — but, following the same rule that gated `v0.2-agent` and
+`v0.3-aws`, is not tagged until it has been live-verified end to end against real
+infrastructure (a real `terraform apply`, a real scheduled eval run) rather than merged and
+green on hermetic tests alone.
 
 The hermetic unit suite (`make test`) is green for both backend and frontend. Live tests
 (`pytest -m live`, `backend/tests/live/`) hit a real Snowflake warehouse, cost money, and are
-excluded from `make test` by default — see [docs/FLOW.md §9](docs/FLOW.md#9-tests) for
+excluded from `make test` by default — see [docs/FLOW.md §11](docs/FLOW.md#11-tests) for
 current counts.
 
 ## Defense in depth, and what each layer is not
@@ -93,6 +102,56 @@ current counts.
    `GOLD` plus exactly two `COPILOT` tables, so layer 3 does not depend on layer
    1's allowlist. `COPILOT_WH` carries `STATEMENT_TIMEOUT_IN_SECONDS = 60` so a
    runaway generated query cannot outlive the request that started it.
+
+## Evals
+
+```bash
+make evals              # golden set: deterministic grading + LLM judge, writes COPILOT.EVAL_RESULTS
+make evals-retrieval    # retrieval-only recall@k, no LLM in the loop
+```
+
+`make evals` runs every case in `data/evals/golden.yaml` through the real
+`answer_question` pipeline (live Anthropic + live Snowflake — this is not a
+mock), grades each one, and prints a scorecard:
+
+```
+[PASS] count-machines-by-model score=1.00 ok
+...
+=== Eval scorecard: 28/30 passed, mean score 0.97 ===
+  data_query: 12/14 passed, mean score 0.95
+  glossary_lookup: 6/6 passed, mean score 1.00
+  ...
+```
+
+Most cases grade deterministically (does the generated SQL mention the right
+table, does the answer contain the right number); a case only pays for an LLM
+judge call when its expectation is genuinely prose (`judge: "..."` in the
+YAML). A `safety-` case failing is not a soft signal — it means one of the
+three SQL defense layers regressed — so `make evals` exits non-zero whenever
+any `safety-` case fails, independent of the overall pass rate.
+
+The eval runner (`backend/src/copilot/eval/runner.py`) also takes two flags
+used by CI rather than a human at the keyboard:
+
+- `--subset N` — a deterministic N-case slice (sorted by id, at least two
+  `safety-` cases guaranteed in the mix) for a cheap per-PR smoke check.
+- `--publish` — after the run, also scores the retrieval set and sends
+  `EvalAccuracy` and `EvalRetrievalRecall` to CloudWatch (namespace
+  `AnalyticsCopilot`), so weekly drift is a line on the dashboard below, not
+  a number buried in a CI log.
+
+`.github/workflows/evals.yml` wires this in: a 5-case smoke subset on every
+pull request (no warehouse access, no `--publish`), and the full golden set
+plus retrieval set weekly (Mondays) and on manual dispatch, with
+`--publish`.
+
+**Dashboard:** `terraform -chdir=infra output -raw dashboard_url` after
+`make aws-up` — answered/min by outcome, p50/p95 latency, retrieval latency by
+mode, tokens/min, ECS CPU/memory, and a log-insights panel of recent non-ok
+answers, all built from the EMF metrics the app already emits (see
+`backend/src/copilot/metrics.py`). Two alarms watch the same data: an
+elevated non-ok answer rate, and an unhealthy ALB target (a dead task is the
+failure that actually takes the demo down). See `infra/cloudwatch.tf`.
 
 ## Deploying to AWS
 

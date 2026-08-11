@@ -9,7 +9,7 @@ Snowflake result and back.
 Keep the `file:line` references accurate; a stale line number is worse than none. See
 [DECISIONS.md](DECISIONS.md) for *why* each of these things is the way it is.
 
-*Verified against the tree at commit `81c86ae`. Line numbers reflect that commit.*
+*Verified against the tree at commit `8c564b0`. Line numbers reflect that commit.*
 
 ---
 
@@ -115,7 +115,16 @@ it twice — once normally, once through the repair edge.
    comes from `_logged_conversation_id` (`main.py:208-217`), which is *always*
    identity-scoped and never `None` — `REQUEST_LOG` has no user column, so without this an
    audit row cannot name its actor.
-10. **Return** the `ChatResponse` (`main.py:309`).
+10. **Emit metrics** — `main.py:367-373`, four `metrics.emit()` calls (`metrics.py:17-34`)
+    into EMF: `Answered` (dims `role`, `outcome`, `intent`), `LatencyMs` (`role`, `outcome`),
+    `RetrievalMs` (`role`, `mode`), `TokensTotal` (`role`). `outcome` is
+    `resp.error_type or "ok"`. This is a `print()` of a JSON line with an `_aws` block —
+    CloudWatch Logs extracts it into the `AnalyticsCopilot` namespace automatically; see
+    §9 (Eval harness) for `EvalAccuracy`/`EvalRetrievalRecall`, published the same way but
+    via `PutMetricData` instead, since that job has no log stream to piggyback on.
+    `emit()` swallows every exception, so a malformed metric never breaks the response —
+    see `docs/DECISIONS.md` for the resulting silent-drop trade-off.
+11. **Return** the `ChatResponse` (`main.py:309`).
 
 `POST /api/feedback` (`main.py:312-326`) follows the same auth path, validates the rating,
 and writes via `sf_writer`. Unlike request logging, a feedback write failure **is**
@@ -429,7 +438,80 @@ COPILOT schema sits outside the medallion and holds the AI library and ops table
 
 ---
 
-## 9. Tests
+## 9. Eval harness
+
+`data/evals/golden.yaml` (~30 cases: `data_query`, `glossary_lookup`, `smalltalk`,
+`unsupported`, plus a `safety-` subset whose questions must trip the SQL guard) drives the
+real pipeline, not a mock of it.
+
+1. **Load** — `load_cases()` (`eval/cases.py:28-36`) parses the YAML into `EvalCase` and
+   rejects duplicate ids.
+2. **Run** — `run(cases, provider, sf, writer=None)` (`eval/runner.py:127-150`) calls
+   `answer_question(case.question, provider, sf)` once per case (the exact function §2
+   calls from `/api/chat`), then `grade_with_judge` (`runner.py:70-82`).
+3. **Grade** — `grade()` (`runner.py:42-67`) is pure and deterministic: an unexpected
+   `error_type` fails first, then an intent mismatch, then the expected `error_type`, then
+   substring checks on `sql`/`answer`, scored as a fraction. `grade_with_judge()`
+   (`runner.py:70-82`) only spends an LLM call (`judge_answer`, `eval/judge.py:47-56`) when
+   the deterministic grade already passed *and* the case carries a `judge:` criterion —
+   prose answers need judgment, everything else does not.
+4. **Log** — if `writer` is given, each result is a row in `COPILOT.EVAL_RESULTS`
+   (`runner.py:29-33`, `INSERT_SQL`), which `make evals` (`Makefile`) supplies and
+   `--subset`/CI smoke runs do not.
+5. **Scorecard and gate** — `_print_scorecard` (`runner.py:112-124`) prints a pass count,
+   mean score, and per-intent breakdown. `run()` (`runner.py:127-150`) then exits the
+   process non-zero if any `safety-` case failed (`runner.py:144-149`) — a guard regression
+   is not a soft signal.
+6. **CLI** — `main()` (`runner.py:210-248`) adds `--subset N` (`_select_subset`,
+   `runner.py:153-173`: sorted by id, at least 2 `safety-` cases guaranteed) and `--publish`
+   (`runner.py:240-248` calling `_pass_fraction`, `runner.py:176-177`, and `_publish_metrics`,
+   `runner.py:180-207`: after the run, also scores every `retrieval.yaml` case via
+   `retrieval_eval.score_retrieval`/`retrieve`, then one `boto3` `put_metric_data` call
+   carrying both `EvalAccuracy` and `EvalRetrievalRecall` into the `AnalyticsCopilot`
+   namespace).
+7. **Retrieval-only pass** — `eval/retrieval_eval.py:44-74` (`make evals-retrieval`) scores
+   `recall@k` (`score_retrieval`, `retrieval_eval.py:34-41`) against `retrieve()`'s output
+   directly, no LLM in the loop, and exits non-zero under `MIN_MEAN_RECALL = 0.8`
+   (`retrieval_eval.py:20`).
+8. **CI** — `.github/workflows/evals.yml` runs `--subset 5` on every `pull_request` (no
+   Snowflake credentials — see the workflow's own comments and `docs/DECISIONS.md` for the
+   resulting limitation on what that specific run can verify) and the full set with
+   `--publish` on a weekly schedule and `workflow_dispatch`, assuming the deploy role via
+   OIDC and reading Snowflake credentials from the same Secrets Manager secret the ECS task
+   uses (`infra/iam.tf`'s `secretsmanager:GetSecretValue` grant).
+
+---
+
+## 10. Admin console
+
+Three read-only endpoints under `/api/admin/*`, gated by `_require_admin` (`main.py:291-302`)
+— a non-admin gets **403**, not 404: `_require_identity` already raises 401 for anyone
+unauthenticated, so by the time the role check runs the caller is known and authenticated,
+and pretending the route does not exist would only cost debuggability, not add security (see
+`docs/DECISIONS.md`).
+
+| Endpoint | Handler | Query |
+|---|---|---|
+| `GET /api/admin/overview` | `main.py:394-436` | `ADMIN_OVERVIEW_SQL` (`main.py:204-209`, `GROUPING SETS` for the grand total) + `ADMIN_FEEDBACK_COUNTS_SQL` (`main.py:210-212`) |
+| `GET /api/admin/requests` | `main.py:439-448` | `ADMIN_REQUESTS_SQL` (`main.py:219-221`), `limit` clamped by `_clamp_admin_limit` (`main.py:232-233`) |
+| `GET /api/admin/feedback` | `main.py:451-459` | `ADMIN_FEEDBACK_SQL` (`main.py:224-226`), same clamp |
+
+All three run through `state.sf_admin` (the `COPILOT_ADMIN` session), so the same masking
+rules from §2 step 5 apply — an admin reading the ops tables sees unmasked data, same as an
+admin's chat queries. `_rows_to_dicts` (`main.py:236-244`) shapes the raw column/row pairs
+into the JSON the frontend expects.
+
+The frontend view, `frontend/src/Admin.tsx`, fetches all three in parallel
+(`Admin.tsx:23-44`) and renders overview tiles, a recent-requests table, and a feedback
+browser. It is reachable only when `authState.role === "admin"` — `App.tsx:60` computes
+`showAdmin` from both the current view *and* the role, so a stale `view === "admin"` left
+over from a prior admin session cannot render the console for an analyst who just logged in
+on the same tab (`App.tsx:57-60`). The tab itself only renders for admins in the first place
+(`App.tsx:111`).
+
+---
+
+## 11. Tests
 
 - **Fakes** — `backend/tests/conftest.py`. `FakeProvider` (`7-23`) returns
   `intent="data_query"` for any `QueryPlan` call and scripted SQL otherwise.
@@ -440,14 +522,13 @@ COPILOT schema sits outside the medallion and holds the AI library and ops table
 - **Live marking** — `backend/pyproject.toml:30-31` sets `addopts = "-m 'not live'"`, so
   live tests are excluded by default rather than by convention.
   `tests/live/test_slice_live.py:7` applies `pytestmark = pytest.mark.live` to all five.
-- **Counts, from an actual run on 2026-08-10 (commit `81c86ae`):** backend **184 passed, 5
-  deselected**; frontend **18 passed** across 2 files. Phase 3B is still landing on this
-  branch, so treat this as a snapshot rather than a pinned target — reproduce with
+- **Counts, from an actual run on 2026-08-10 (commit `8c564b0`):** backend **235 passed, 5
+  deselected**; frontend **23 passed** across 3 files. Reproduce with
   `cd backend && uv run pytest -q -m "not live"` and `cd frontend && npm test -- --run`.
 
 ---
 
-## 10. Where the defensive branches came from
+## 12. Where the defensive branches came from
 
 Most of the odd-looking code above is a scar. This maps each one to what it survived.
 

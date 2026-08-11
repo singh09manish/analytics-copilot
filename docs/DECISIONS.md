@@ -627,7 +627,104 @@ and the fix is usually to stop declaring the resource, not to keep patching arou
 
 ---
 
-## 12. Process
+## 12. Evals and telemetry (Phase 3B)
+
+### EMF for the app's own metrics, not `PutMetricData`
+The chat path (`backend/src/copilot/metrics.py`) emits CloudWatch Embedded Metric Format —
+a `print()` of a JSON line with an `_aws` block — instead of calling `PutMetricData`
+directly. The ECS task already ships stdout to CloudWatch Logs via the `awslogs` driver, so
+EMF turns a log line CloudWatch would capture anyway into a metric with: no extra network
+call on the request path, no `boto3` import in the hot path, and — the part that actually
+shaped the task role — **no IAM permission at all**, because `PutMetricData` would need one
+and reading a log stream the ECS agent already owns does not. `infra/iam.tf`'s comment on
+`aws_iam_role.ecs_task` says it plainly: the task role is empty of AWS permissions by design,
+and EMF is why adding metrics never had to be the thing that broke that.
+
+The trade-off, paid deliberately: `emit()` (`metrics.py:17-34`) wraps the whole thing in a
+bare `try/except: pass`. A malformed `_aws` block — a typo in a dimension name, a value
+`json.dumps` can't serialize — is silently dropped: no exception, no metric, no signal
+anywhere that it didn't land. That is why the shape is pinned by a test rather than trusted
+to review, and why every dashboard widget in `infra/cloudwatch.tf` was written only after
+reading the exact metric and dimension names at the `emit()` call sites (`api/main.py:
+367-373`) rather than assumed — a widget naming a dimension that is never emitted renders
+empty forever with no error either, the same failure mode one layer up.
+
+The eval job (`copilot.eval.runner`'s `--publish`, `runner.py:180-207`) is the opposite
+case, and deliberately so: it runs in GitHub Actions, not inside the ECS task, so it has no
+log stream shipping to CloudWatch Logs to piggyback on. `PutMetricData` is the only way for
+it to land `EvalAccuracy`/`EvalRetrievalRecall` in the same namespace, which is why
+`infra/iam.tf` grants the GitHub deploy role a `cloudwatch:PutMetricData` permission the ECS
+task role does not have and does not need. `PutMetricData` has no resource-level
+permissions — `Resource` is always `"*"` for that action — so the `cloudwatch:namespace`
+condition on that grant is the only thing keeping it scoped to `AnalyticsCopilot` instead of
+every namespace in the account.
+
+### Grading is mostly deterministic; the LLM judge is reserved for prose
+`grade()` (`runner.py:42-67`) checks `error_type`, `intent`, and substrings in the generated
+SQL or answer — string comparisons, no model call, no variance, and cheap enough to run on
+every case every time. That covers most of the golden set, because most of it has a checkable
+right answer: the SQL should mention `GOLD.DIM_MACHINE`, the guard should reject with
+`validation`, the answer should contain `"98"`. An LLM judge (`eval/judge.py`) is invoked
+only for cases whose correctness is genuinely a matter of prose quality — "does this glossary
+answer actually explain MTTR" — where no substring check can distinguish a real answer from
+one that merely contains the right keyword. Reserving the judge for that minority keeps the
+harness fast, cheap, and reproducible for the majority of cases, and spends the
+slower/costlier/noisier tool only where a cheaper one structurally cannot do the job.
+
+### `safety-` case failures exit the run non-zero, independent of the pass rate
+`run()` (`runner.py:127-150`) prints a scorecard for every case, but a failed `safety-` case
+triggers `sys.exit(1)` regardless of how many other cases passed (`runner.py:144-149`). A
+guard rejection is not a soft quality signal like "the SQL didn't mention the right table" —
+it means one of the three SQL defense layers documented in §3 regressed, and a regressed
+defense layer is exactly the kind of failure a green-looking scorecard (28/30, "97% mean
+score") would otherwise bury. This mirrors the project's own history: §3's COPILOT-schema
+exposure and §5's planner bug were both real regressions that a purely aggregate pass rate
+would not have surfaced as urgent.
+
+One golden case needed fixing to make this gate trustworthy rather than superstitious:
+`safety-update-open-tickets` asked to "Update every open service ticket ... mark it as
+resolved," which `plan_system()` (`agent/prompts.py`) correctly classifies as
+`intent=unsupported` — a request to modify data, not read it. `unsupported` routes straight
+to `scope_reply` and never reaches `generate()`/`validate()` at all, so the case failed on
+an intent mismatch every time, never once exercising the guard. A `safety-` case that cannot
+fail because the guard tripped is not testing the guard; it would have silently stopped
+catching a real guard regression while still reporting the expected shape of failure. It is
+now `safety-select-silver-staging`, a SELECT-shaped question that names a non-GOLD schema
+directly (`MEDTECH_ANALYTICS.SILVER.SERVICE_TICKETS`) — a read the planner correctly
+classifies as `data_query`, that reaches the guard, and that the guard rejects for a real,
+verifiable reason (`schema SILVER is not allowed`).
+
+**Known limitation, stated rather than hidden:** the CI smoke subset
+(`.github/workflows/evals.yml`, `--subset 5` on `pull_request`) has no Snowflake credentials
+on that trigger at all — a PR branch cannot assume the OIDC deploy role (the trust condition
+in `infra/iam.tf` only matches `ref:refs/heads/main`), and duplicating Snowflake credentials
+as a second GitHub secret just for this path was rejected for the same reason it was rejected
+for the weekly run (see below). But `retrieve()` (`retrieval.py:40-69`) unconditionally needs
+a live Snowflake connection for schema-card lookup before a `data_query` case's SQL is even
+generated, let alone validated — so in a live run, the PR subset's `safety-` cases currently
+fail with `error_type="snowflake"` rather than exercising the guard, the exact false-negative
+shape the `safety-update-open-tickets` fix above was written to eliminate. This gap is not
+resolved in Phase 3B; it is flagged here, in the workflow file's own comments, and in
+`FLOW.md` §9 for whoever picks it up. The two obvious fixes are a scoped-down,
+read-only Snowflake credential provisioned specifically for CI (a real new credential, not a
+duplicate of the app's), or an offline/static schema-card fallback in `retrieve()` that lets
+guard-only cases run with no warehouse at all.
+
+### Admin endpoints return 403, not 404
+`_require_admin` (`api/main.py:291-302`) raises 403 for an authenticated non-admin, not 404.
+`_require_identity` already runs first and raises 401 for anyone unauthenticated, so by the
+time the role check executes, the caller is known to be a real, authenticated user — the
+route unquestionably exists and the only open question is whether this caller may use it.
+Returning 404 there would be security-theater obscurity that costs real debuggability (an
+analyst hitting `/api/admin/overview` by a stale bookmark sees a nonsensical "not found" for
+a page that plainly exists in the same app) without buying any actual protection: the
+endpoint's existence is not secret — it is in this repository — and an attacker who already
+holds a valid token learns nothing from a 403 that a 404 would have hidden. 403 is the
+honest status for "authenticated, and not allowed."
+
+---
+
+## 13. Process
 
 ### Subagent-driven development with mandatory review
 Each task was implemented by a fresh agent with only that task's brief, then reviewed by a
