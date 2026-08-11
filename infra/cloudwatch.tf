@@ -21,9 +21,16 @@
 # dimension set, not one each -- so a widget that wants "per outcome" cannot just
 # name Namespace/MetricName/outcome the way a single-dimension metric would; it has
 # to use a metrics-search expression that pins outcome and lets role/intent vary,
-# then collapses the resulting series with SUM()/AVG(). CloudWatch explicitly
-# supports alarming and graphing on a math expression built this way (SUM(SEARCH(...))
-# etc.), which is what every widget and the error_rate alarm below do.
+# then collapses the resulting series with SUM()/AVG(). CloudWatch supports
+# graphing on a math expression built this way (SUM(SEARCH(...)) etc.), which is
+# what every dashboard widget below does -- but NOT alarming on one: PutMetricAlarm
+# categorically rejects a SEARCH expression inside metric math ("You can't create
+# an alarm based on a SEARCH expression"), wrapping it in SUM()/AVG() included.
+# `terraform plan` does not call PutMetricAlarm, so this only surfaces at apply
+# time. The error_rate alarm below instead uses a CloudWatch Metrics Insights SQL
+# query (a `SELECT ... FROM "AnalyticsCopilot" WHERE outcome != 'ok'` metric_query),
+# which IS supported for alarms and handles the outcome != "ok" filter natively --
+# no SEARCH, no total-minus-ok subtraction.
 
 resource "aws_cloudwatch_dashboard" "main" {
   dashboard_name = "${local.name}-overview"
@@ -139,6 +146,16 @@ resource "aws_cloudwatch_dashboard" "main" {
       # The one widget that reads the log group directly rather than the metrics
       # CloudWatch already extracted from it -- useful for "what actually broke"
       # in a way a count on a graph cannot show.
+      #
+      # `ispresent(outcome) and ispresent(intent)` is load-bearing, not
+      # decorative: `outcome != "ok"` alone matches every log line that has no
+      # `outcome` field at all (a missing field trivially satisfies "!= ok"),
+      # and the ECS task's log group carries far more than /api/chat's EMF lines
+      # -- ALB health check hits, uvicorn access logs, startup lines. Verified
+      # live pre-fix: 540/540 matched rows, top of the list all ALB health
+      # checks. `intent` is only ever emitted alongside `outcome` on the single
+      # `Answered` EMF line (main.py), so requiring both narrows this to exactly
+      # that line.
       {
         type = "log", x = 12, y = 12, width = 12, height = 6
         properties = {
@@ -148,10 +165,33 @@ resource "aws_cloudwatch_dashboard" "main" {
           query  = <<-EOQ
             SOURCE '${aws_cloudwatch_log_group.app.name}'
             | fields @timestamp, outcome, intent, role
-            | filter outcome != "ok"
+            | filter ispresent(outcome) and ispresent(intent) and outcome != "ok"
             | sort @timestamp desc
             | limit 20
           EOQ
+        }
+      },
+      # --- Weekly eval drift: EvalAccuracy / EvalRetrievalRecall -----------
+      # Published by the weekly eval job (copilot.eval.runner's --publish, via
+      # PutMetricData -- see docs/DECISIONS.md section 12), not by the app itself, into
+      # the same AnalyticsCopilot namespace as the EMF metrics above. Both are
+      # published with NO dimensions, so each is referenced as a plain
+      # Namespace/MetricName metric here rather than through a SEARCH
+      # expression -- SEARCH needs at least one dimension to search across, and
+      # using it on a dimensionless metric is both unnecessary and (per the
+      # alarm comment above) the kind of construct that silently fails to
+      # transfer to an alarm later.
+      {
+        type = "metric", x = 0, y = 18, width = 12, height = 6
+        properties = {
+          title  = "Weekly eval drift"
+          view   = "timeSeries"
+          region = var.region
+          period = 300
+          metrics = [
+            ["AnalyticsCopilot", "EvalAccuracy", { stat = "Average", label = "Eval accuracy" }],
+            ["AnalyticsCopilot", "EvalRetrievalRecall", { stat = "Average", label = "Retrieval recall@k" }],
+          ]
         }
       },
     ]
@@ -169,10 +209,18 @@ resource "aws_cloudwatch_dashboard" "main" {
 
 # Non-ok Answered count, sustained over two consecutive 5-minute periods (not a
 # single blip -- one bad request during a model hiccup is not a regression).
-# Built as total-minus-ok rather than a direct "outcome != ok" filter because
-# CloudWatch's metric search syntax only matches exact dimension values, not
-# inequality; subtracting the "ok" count from the total is the metric-math
-# equivalent of "!=".
+#
+# This alarm cannot use a SEARCH-based metric-math expression the way the
+# dashboard widgets above do -- CloudWatch's PutMetricAlarm categorically
+# rejects "You can't create an alarm based on a SEARCH expression", wrapping it
+# in SUM()/AVG() included, and `terraform plan` never calls that API so it
+# cannot catch this offline (see the comment near the top of this file). The
+# fix is a CloudWatch Metrics Insights query, a *different* CloudWatch feature
+# that IS supported inside `metric_query.expression` for alarms and handles
+# `outcome != 'ok'` as a real SQL inequality -- no SEARCH, and no need to
+# separately query "total" and "ok" and subtract them the way an equality-only
+# SEARCH would have required. It must resolve to a single time series (no
+# GROUP BY): an alarm can only ever evaluate one.
 resource "aws_cloudwatch_metric_alarm" "error_rate" {
   alarm_name          = "${local.name}-error-rate"
   alarm_description   = "More than 3 non-ok Answered results in a 5-minute window, twice in a row."
@@ -185,23 +233,10 @@ resource "aws_cloudwatch_metric_alarm" "error_rate" {
   treat_missing_data = "notBreaching"
 
   metric_query {
-    id          = "total"
-    expression  = "SUM(SEARCH('{AnalyticsCopilot,role,outcome,intent} MetricName=\"Answered\"', 'Sum', 300))"
-    label       = "Total answered"
-    return_data = false
-  }
-
-  metric_query {
-    id          = "ok"
-    expression  = "SUM(SEARCH('{AnalyticsCopilot,role,outcome,intent} MetricName=\"Answered\" outcome=\"ok\"', 'Sum', 300))"
-    label       = "OK answered"
-    return_data = false
-  }
-
-  metric_query {
     id          = "errors"
-    expression  = "total - ok"
+    expression  = "SELECT SUM(\"Answered\") FROM \"AnalyticsCopilot\" WHERE outcome != 'ok'"
     label       = "Non-ok answered"
+    period      = 300
     return_data = true
   }
 }
