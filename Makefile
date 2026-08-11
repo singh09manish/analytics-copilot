@@ -15,7 +15,7 @@ export SNOWFLAKE_PRIVATE_KEY_PATH_ABS := $(CURDIR)/$(SNOWFLAKE_PRIVATE_KEY_PATH)
 UV_BIN := $(shell command -v uv 2>/dev/null || echo $(HOME)/.local/bin/uv)
 UV := cd backend && $(UV_BIN)
 
-.PHONY: install lint test test-live seed api web check-env load-bronze dbt-run dbt-test ai-library mcp-server aws-plan aws-up aws-down aws-secret aws-smoke
+.PHONY: install lint test test-live seed api web check-env load-bronze dbt-run dbt-test ai-library mcp-server aws-plan aws-up aws-down aws-secret aws-smoke evals
 
 install:
 	$(UV) sync
@@ -55,6 +55,9 @@ check-env:
 
 mcp-server:
 	$(UV) run python ../mcp_server/server.py
+
+evals:
+	$(UV) run python -m copilot.eval.runner
 
 TF := ~/.local/bin/terraform -chdir=$(CURDIR)/infra
 
