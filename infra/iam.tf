@@ -33,7 +33,14 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
 
 # --- Task role: the app's own identity. It talks to Snowflake and Anthropic over
 # the internet with their own credentials, so it needs no AWS permissions at all.
-# Phase 3B adds cloudwatch:PutMetricData here.
+# Phase 3B's metrics do NOT change that. The app emits CloudWatch Embedded Metric
+# Format -- a print() of a JSON line the ECS agent's awslogs driver already ships
+# to CloudWatch Logs (see backend/src/copilot/metrics.py) -- so publishing a
+# metric costs it no AWS permission at all. cloudwatch:PutMetricData was added to
+# the GitHub deploy role below instead, because the eval job runs in GitHub
+# Actions, not inside this task, so it has no log stream to piggyback on and
+# PutMetricData is the only way for it to land a metric. That asymmetry is the
+# whole reason EMF was chosen for the app's own path.
 resource "aws_iam_role" "ecs_task" {
   name = "${local.name}-ecs-task"
   assume_role_policy = jsonencode({

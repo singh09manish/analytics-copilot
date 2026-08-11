@@ -23,15 +23,15 @@ with a comment into `COPILOT.FEEDBACK`. The app is deployed to AWS (Terraform,
 ECS Fargate, CloudFront) — see "Deploying to AWS" below. An admin-only
 **Admin Console** (`GET /api/admin/overview|requests|feedback`, gated 403 for
 anyone else) surfaces request/feedback tiles and a browser over both tables. An
-**eval harness** (`make evals`) runs a ~30-case golden set through the real
+**eval harness** (`make evals`) runs a 36-case golden set through the real
 pipeline — deterministic grading plus an LLM judge for prose answers, a
 separate retrieval-only recall@k pass, and a weekly full run (plus on-demand
 `workflow_dispatch`) that publishes accuracy to CloudWatch — see "Evals" below
 for why there is deliberately no PR-triggered subset. **CloudWatch telemetry**
 — a dashboard, plus two alarms watching two different signals (one over the
 EMF metrics the app already emits, one over the ALB's own native health
-metric) — completes the loop; see `terraform output dashboard_url` after
-`make aws-up`.
+metric) — completes the loop; see `terraform -chdir=infra output -raw
+dashboard_url` after `make aws-up`.
 
 ## Documentation
 
@@ -112,18 +112,32 @@ make evals              # golden set: deterministic grading + LLM judge, writes 
 make evals-retrieval    # retrieval-only recall@k, no LLM in the loop
 ```
 
-`make evals` runs every case in `data/evals/golden.yaml` through the real
-`answer_question` pipeline (live Anthropic + live Snowflake — this is not a
-mock), grades each one, and prints a scorecard:
+`make evals` runs every case in `data/evals/golden.yaml` (36 cases: 14
+`data_query`, 6 `safety-`, 6 `glossary_lookup`, 5 `smalltalk`, 5 `unsupported`)
+through the real `answer_question` pipeline (live Anthropic + live Snowflake —
+this is not a mock), grades each one, and prints a scorecard in this shape:
 
 ```
 [PASS] count-machines-by-model score=1.00 ok
 ...
-=== Eval scorecard: 28/30 passed, mean score 0.97 ===
-  data_query: 12/14 passed, mean score 0.95
+=== Eval scorecard: 35/36 passed, mean score 0.97 ===
+  data_query: 13/14 passed, mean score 0.93
   glossary_lookup: 6/6 passed, mean score 1.00
-  ...
+  safety: 6/6 passed, mean score 1.00
+  smalltalk: 5/5 passed, mean score 1.00
+  unsupported: 5/5 passed, mean score 1.00
 ```
+
+That is the actual result of the **last full live run: 2026-08-10**, safety
+gate green (all six `safety-` cases refused with no rows returned, satisfying
+`run()`'s non-negotiable exit-1 gate — see `docs/DECISIONS.md` §12). The one
+failure, `parts-cost-by-model`, was the planner-inventory gap documented
+there — `plan_system()`'s table inventory omitted `FACT_SERVICE_TICKET.
+parts_cost` — since fixed by adding that column to the inventory
+(`agent/prompts.py`). A fresh full run was in progress as this was written;
+check the `eval-scorecard` artifact on the latest `evals.yml` run for the
+current number before quoting one, rather than trusting this paragraph to
+stay current.
 
 Most cases grade deterministically (does the generated SQL mention the right
 table, does the answer contain the right number); a case only pays for an LLM
@@ -136,7 +150,10 @@ The eval runner (`backend/src/copilot/eval/runner.py`) also takes two flags
 used by CI rather than a human at the keyboard:
 
 - `--subset N` — a deterministic N-case slice (sorted by id, at least two
-  `safety-` cases guaranteed in the mix) for a cheap per-PR smoke check.
+  `safety-` cases guaranteed in the mix) for a cheap manual `workflow_dispatch`
+  run against the live deployed stack. It is not, and cannot be, a per-PR
+  check -- see below for why the `pull_request` trigger that once ran it was
+  deleted rather than fixed.
 - `--publish` — after the run, also scores the retrieval set and sends
   `EvalAccuracy` and `EvalRetrievalRecall` to CloudWatch (namespace
   `AnalyticsCopilot`), so weekly drift is a line on the dashboard below, not
@@ -178,12 +195,14 @@ The path from an empty AWS account to a live URL:
 cp infra/terraform.tfvars.example infra/terraform.tfvars   # edit github_repo first
 make aws-up                                                 # terraform apply; prints app_url
 
-# Wire the deploy pipeline to what apply just created -- deploy.yml reads these four
-# repo variables, and it fails at the first step on a fresh repo without them.
+# Wire the deploy pipeline to what apply just created -- deploy.yml verifies the
+# first three of these as required and fails at its first step on a fresh repo
+# without them. APP_URL is optional; its post-deploy smoke-test step skips
+# cleanly when it's unset, but set it too to get that check for free.
 gh variable set AWS_DEPLOY_ROLE_ARN --body "$(terraform -chdir=infra output -raw github_deploy_role_arn)"
 gh variable set WEB_BUCKET --body "$(terraform -chdir=infra output -raw web_bucket)"
 gh variable set CLOUDFRONT_DISTRIBUTION_ID --body "$(terraform -chdir=infra output -raw cloudfront_distribution_id)"
-gh variable set APP_URL --body "$(terraform -chdir=infra output -raw app_url)"   # read by the post-deploy smoke step
+gh variable set APP_URL --body "$(terraform -chdir=infra output -raw app_url)"   # optional -- read by the post-deploy smoke step
 
 make aws-secret                                              # pushes .env + the Snowflake key into Secrets Manager
 git push                                                      # deploy.yml builds the image and rolls the service

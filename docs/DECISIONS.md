@@ -286,8 +286,14 @@ exactly what an eval harness with golden questions catches on day one.
 
 ### `answer_question` never raises
 The API contract is a `ChatResponse` with a typed `error_type`, never an exception. Every
-node catches, and errors are classified by origin: `validation`, `llm`, `snowflake`,
-`retrieval`. Three separate review rounds found holes in this — the graph construction
+node catches, and errors are classified by origin: `validation`, `llm`, `snowflake` — there
+is no separate `retrieval` value. `do_retrieve` (`agent/graph.py`) calls `retrieve()`, which
+is itself a Snowflake call with no distinct failure mode of its own, so a retrieval failure
+is caught by `answer_question`'s generic `except Exception` and reported as `snowflake`
+(`pipeline.py:58-62`) exactly like any other warehouse failure. A fourth, `retrieval`-specific
+value would only be worth adding if retrieval ever grew a failure mode distinguishable from
+"couldn't reach Snowflake" — it does not today. Three separate review rounds found holes in
+the three-value contract above — the graph construction
 sitting outside the try block, provider exceptions that are not `ValueError` being
 reported as warehouse failures, and a stale `exec_error` overriding a node's correct
 classification on the repair cycle. Each is now covered by a regression test.
@@ -635,10 +641,13 @@ a `print()` of a JSON line with an `_aws` block — instead of calling `PutMetri
 directly. The ECS task already ships stdout to CloudWatch Logs via the `awslogs` driver, so
 EMF turns a log line CloudWatch would capture anyway into a metric with: no extra network
 call on the request path, no `boto3` import in the hot path, and — the part that actually
-shaped the task role — **no IAM permission at all**, because `PutMetricData` would need one
-and reading a log stream the ECS agent already owns does not. `infra/iam.tf`'s comment on
-`aws_iam_role.ecs_task` says it plainly: the task role is empty of AWS permissions by design,
-and EMF is why adding metrics never had to be the thing that broke that.
+shaped the task role — **no IAM permission for the metrics path at all**, because
+`PutMetricData` would need one and reading a log stream the ECS agent already owns does not.
+`infra/iam.tf`'s comment on `aws_iam_role.ecs_task` says it plainly: the task role holds no
+permissions the *application* uses — its one grant is a narrow, stated exception
+(`ssmmessages:*`, so ECS Exec can attach to a task for debugging even if it dies before it
+writes anything useful to the log group) — and EMF is why adding metrics never had to be the
+thing that widened that.
 
 The trade-off, paid deliberately: `emit()` (`metrics.py:17-34`) wraps the whole thing in a
 bare `try/except: pass`. A malformed `_aws` block — a typo in a dimension name, a value
