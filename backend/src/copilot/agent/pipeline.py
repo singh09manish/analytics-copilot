@@ -1,8 +1,12 @@
+import logging
+
 from pydantic import BaseModel
 
 from copilot.llm.provider import LLMProvider
 from copilot.snowflake_client import SnowflakeClient
 from copilot.sql_guard import SqlGuardError
+
+logger = logging.getLogger(__name__)
 
 
 class ChatResponse(BaseModel):
@@ -46,16 +50,26 @@ def answer_question(question: str, provider: LLMProvider, sf: SnowflakeClient, *
              "retrieval_mode": ""},
             **invoke_kwargs)
     except SqlGuardError as e:
+        logger.warning("request_id=%s: SQL guard rejected a draft outside the graph "
+                       "(reason=%s).", request_id, e.reason, exc_info=True)
         return ChatResponse(
             answer=f"I generated a query the safety rules rejected ({e.reason}). "
                    "Try rephrasing your question.",
             error_type="validation", request_id=request_id)
     except ValueError:
+        logger.warning("request_id=%s: graph invocation raised ValueError (typically "
+                       "schema-invalid LLM output twice).", request_id, exc_info=True)
         return ChatResponse(
             answer="I couldn't turn that into a query. Try rephrasing with the "
                    "metric and time range you care about.",
             error_type="llm", request_id=request_id)
-    except Exception:  # noqa: BLE001 — total outage must degrade, not crash
+    except Exception:  # total outage must degrade, not crash
+        # Classified "snowflake" because that is the overwhelmingly likely cause, but
+        # this arm also catches a langgraph import/build failure -- the traceback is
+        # the only thing that tells the two apart.
+        logger.warning("request_id=%s: graph invocation failed outside any node; "
+                       "degrading to the warehouse-unreachable answer.",
+                       request_id, exc_info=True)
         return ChatResponse(
             answer="I couldn't reach the warehouse to look up context. Please try "
                    "again in a moment.",
@@ -92,7 +106,9 @@ def answer_question(question: str, provider: LLMProvider, sf: SnowflakeClient, *
             retrieval_mode=state.get("retrieval_mode") or None,
             tokens_in=state.get("tokens_in", 0), tokens_out=state.get("tokens_out", 0),
             request_id=request_id)
-    except Exception:  # noqa: BLE001 — answer_question NEVER raises
+    except Exception:  # answer_question NEVER raises
+        logger.warning("request_id=%s: assembling ChatResponse from the final graph "
+                       "state failed.", request_id, exc_info=True)
         return ChatResponse(
             answer="I couldn't assemble a response for that. Please try again.",
             error_type="llm", request_id=request_id)

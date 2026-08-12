@@ -15,6 +15,17 @@ from copilot.request_log import log_request
 
 logger = logging.getLogger(__name__)
 
+# uvicorn's default log config touches only the uvicorn.* loggers and leaves the root
+# logger with no handler, so every copilot.* warning fell through to
+# logging.lastResort -- a bare message on stderr with no level, logger name or
+# timestamp. That is what made the deployed LLM failure so hard to attribute. This
+# gives the task's CloudWatch stream attributable lines, and at INFO it also surfaces
+# httpx's one-line-per-request log for outbound Anthropic/Snowflake calls, which names
+# the HTTP status behind an LLM failure. No-ops if the root logger is already
+# configured (pytest's caplog, or uvicorn --log-config).
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
 # Must match Settings.jwt_secret's default in copilot/config.py (and .env.example)
 # exactly: startup refuses to run with this literal in force. It's published in
 # the repo, so anyone with the repo can forge a {"role": "admin"} token and get

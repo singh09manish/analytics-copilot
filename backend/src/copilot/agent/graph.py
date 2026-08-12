@@ -2,6 +2,7 @@
 -> summarize, with one repair cycle and per-conversation memory."""
 import csv
 import io
+import logging
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -11,6 +12,8 @@ from copilot.agent.checkpointer import BoundedInMemorySaver
 from copilot.llm.schemas import QueryPlan, SqlDraft
 from copilot.retrieval import RetrievedContext, retrieve
 from copilot.sql_guard import SqlGuardError, validate
+
+logger = logging.getLogger(__name__)
 
 # Process-global conversation memory, shared by every graph this module builds and
 # keyed by thread_id. Bounded (see checkpointer.py): a plain InMemorySaver retained
@@ -43,6 +46,17 @@ class AgentState(TypedDict, total=False):
     retrieval_mode: str  # "vector" | "keyword" -- see retrieval.RetrievedContext.mode
 
 
+def _provider_label(provider) -> str:
+    """Provider class plus the model id it is pinned to.
+
+    Every LLM-failure log line carries this so an operator can tell from the logs
+    alone which model the *deployed* task actually called -- APP_MODEL is a plain
+    task-definition environment variable, so it can differ from a developer's .env
+    without anything else in the system noticing.
+    """
+    return f"{type(provider).__name__}(model={getattr(provider, '_model', 'unknown')})"
+
+
 def _rows_as_csv(columns: list, rows: list) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -62,7 +76,11 @@ def build_graph(provider, sf, executor=None, use_memory: bool = True):
         try:
             res = provider.structured(system=prompts.plan_system(), user=user,
                                       schema=QueryPlan, max_tokens=300)
-        except Exception:  # noqa: BLE001 — LLM origin; classify as llm, never crash the graph
+        except Exception:  # LLM origin; classify as llm, never crash the graph
+            # The user-facing string is deliberately vague; the log line is not. Without
+            # this, a total LLM outage looks identical to a working app answering badly.
+            logger.warning("plan node: LLM call failed via %s; answering with the "
+                           "generic llm error.", _provider_label(provider), exc_info=True)
             return {"error_type": "llm",
                     "answer": "I couldn't process that request right now. Please try "
                               "again in a moment."}
@@ -87,7 +105,10 @@ def build_graph(provider, sf, executor=None, use_memory: bool = True):
             res = provider.text(system=prompts.glossary_system(),
                                 user=f"Glossary entries:\n{glossary}\n\n"
                                      f"Question: {state['question']}")
-        except Exception:  # noqa: BLE001 — LLM origin; classify as llm, never crash the graph
+        except Exception:  # LLM origin; classify as llm, never crash the graph
+            logger.warning("glossary_answer node: LLM call failed via %s; answering "
+                           "with the generic llm error.",
+                           _provider_label(provider), exc_info=True)
             return {"answer": "I couldn't look that term up right now. Please try "
                               "again in a moment.",
                     "error_type": "llm"}
@@ -104,7 +125,11 @@ def build_graph(provider, sf, executor=None, use_memory: bool = True):
         try:
             res = provider.structured(system=prompts.sql_system(ctx), user=user,
                                       schema=SqlDraft)
-        except Exception:  # noqa: BLE001 — LLM origin; classify as llm, never crash the graph
+        except Exception:  # LLM origin; classify as llm, never crash the graph
+            logger.warning("generate node: LLM call failed via %s (repair_count=%s); "
+                           "answering with the generic llm error.",
+                           _provider_label(provider), state.get("repair_count", 0),
+                           exc_info=True)
             return {"error_type": "llm",
                     "answer": "I couldn't turn that into a query. Try rephrasing with "
                               "the metric and time range you care about."}
@@ -117,6 +142,8 @@ def build_graph(provider, sf, executor=None, use_memory: bool = True):
         try:
             return {"safe_sql": validate(state["draft_sql"])}
         except SqlGuardError as e:
+            logger.warning("validate node: SQL guard rejected the draft (reason=%s).",
+                           e.reason, exc_info=True)
             # Guard rejections are not retried (repair is execute-failure-only); keep
             # the rejected draft_sql/tokens/intent/retrieval_ms already in state so
             # Task 7's ops log gets a full record instead of NULLs.
@@ -129,7 +156,11 @@ def build_graph(provider, sf, executor=None, use_memory: bool = True):
             columns, rows = run_sql(state["safe_sql"])
             return {"columns": list(columns), "rows": [list(r) for r in rows],
                     "exec_error": ""}
-        except Exception as e:  # noqa: BLE001 — routed to repair or graceful error
+        except Exception as e:  # routed to repair or graceful error
+            # exec_error keeps only str(e)[:500] for the repair prompt; the traceback
+            # is the only way to tell a bad-SQL failure from a warehouse/connection one.
+            logger.warning("execute node: SQL execution failed (attempt %s).",
+                           state.get("repair_count", 0) + 1, exc_info=True)
             return {"exec_error": str(e)[:500],
                     "repair_count": state.get("repair_count", 0) + 1}
 
@@ -143,7 +174,9 @@ def build_graph(provider, sf, executor=None, use_memory: bool = True):
             return {"answer": res.value,
                     "tokens_in": state.get("tokens_in", 0) + res.tokens_in,
                     "tokens_out": state.get("tokens_out", 0) + res.tokens_out}
-        except Exception:  # noqa: BLE001 — keep the data even if summarization fails
+        except Exception:  # keep the data even if summarization fails
+            logger.warning("summarize node: LLM call failed via %s; returning the rows "
+                           "without a summary.", _provider_label(provider), exc_info=True)
             return {"answer": "I ran the query successfully but couldn't generate a "
                               "summary. The results are shown below.",
                     "error_type": "llm"}

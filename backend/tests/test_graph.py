@@ -1,3 +1,5 @@
+import logging
+
 from copilot.agent.pipeline import answer_question
 from copilot.llm.provider import LLMResult
 from copilot.llm.schemas import QueryPlan, SqlDraft
@@ -237,3 +239,116 @@ def test_repair_cycle_guard_rejection_is_validation_not_snowflake():
     assert r.error_type == "validation"
     assert "warehouse" not in r.answer.lower()
     assert sf.exec_attempts == 1  # guard rejection short-circuits before a second execute
+
+
+# --- Observability: an LLM failure must be diagnosable from the logs alone. -------
+# The deployed app answered "I couldn't process that request right now" to every
+# question and nothing was logged, so there was no way to tell whether the cause was
+# auth, the model id, egress, or rate limiting. These tests pin the log line, and pin
+# that adding it did not change any user-facing string or error_type.
+
+class _PinnedModelProvider(PlanningFakeProvider):
+    """Stands in for AnthropicProvider, which carries the APP_MODEL id on ._model."""
+
+    _model = "claude-sonnet-5"
+
+
+def _warning_for(caplog, needle):
+    return next(r for r in caplog.records if needle in r.getMessage())
+
+
+def test_plan_llm_failure_is_logged_with_traceback_and_model_id(caplog):
+    class ExplodingProvider(_PinnedModelProvider):
+        def structured(self, system, user, schema, max_tokens=1500):
+            raise RuntimeError("Connection error: api.anthropic.com")
+
+    with caplog.at_level(logging.WARNING, logger="copilot.agent.graph"):
+        r = answer_question("Which models?", ExplodingProvider(), FakeSnowflake())
+
+    assert r.error_type == "llm"  # behaviour unchanged
+    assert r.answer == ("I couldn't process that request right now. Please try "
+                        "again in a moment.")
+    rec = _warning_for(caplog, "plan node")
+    assert rec.exc_info is not None  # traceback attached
+    assert "model=claude-sonnet-5" in rec.getMessage()  # which model the task called
+    assert "Connection error: api.anthropic.com" in caplog.text
+
+
+def test_generate_llm_failure_is_logged_with_traceback(caplog):
+    class FlakyGenerateProvider(_PinnedModelProvider):
+        def structured(self, system, user, schema, max_tokens=1500):
+            self.structured_calls.append((schema.__name__, user))
+            if schema is QueryPlan:
+                return LLMResult(value=QueryPlan(intent="data_query", entities=[]),
+                                 tokens_in=5, tokens_out=2)
+            raise RuntimeError("overloaded_error")
+
+    with caplog.at_level(logging.WARNING, logger="copilot.agent.graph"):
+        r = answer_question("Which models?", FlakyGenerateProvider(), FakeSnowflake())
+
+    assert r.error_type == "llm"
+    assert r.answer == ("I couldn't turn that into a query. Try rephrasing with "
+                        "the metric and time range you care about.")
+    assert _warning_for(caplog, "generate node").exc_info is not None
+    assert "overloaded_error" in caplog.text
+
+
+def test_glossary_llm_failure_is_logged_with_traceback(caplog):
+    class FlakyGlossaryProvider(_PinnedModelProvider):
+        def __init__(self):
+            super().__init__(intent="glossary_lookup")
+
+        def text(self, system, user, max_tokens=1000):
+            raise RuntimeError("authentication_error")
+
+    with caplog.at_level(logging.WARNING, logger="copilot.agent.graph"):
+        r = answer_question("What does MTTR mean?", FlakyGlossaryProvider(), FakeSnowflake())
+
+    assert r.error_type == "llm"
+    assert r.answer == ("I couldn't look that term up right now. Please try "
+                        "again in a moment.")
+    assert _warning_for(caplog, "glossary_answer node").exc_info is not None
+    assert "authentication_error" in caplog.text
+
+
+def test_execute_failure_is_logged_with_traceback(caplog):
+    """exec_error keeps only str(e)[:500]; the traceback is what names the real cause."""
+    with caplog.at_level(logging.WARNING, logger="copilot.agent.graph"):
+        answer_question("Which models?", PlanningFakeProvider(), _RepairFlakySnowflake())
+    assert _warning_for(caplog, "execute node").exc_info is not None
+    assert "invalid identifier" in caplog.text
+
+
+def test_guard_rejection_is_logged(caplog):
+    class RejectedDraftProvider(PlanningFakeProvider):
+        def structured(self, system, user, schema, max_tokens=1500):
+            if schema is QueryPlan:
+                return super().structured(system, user, schema, max_tokens)
+            self.structured_calls.append((schema.__name__, user))
+            return LLMResult(value=SqlDraft(sql="DROP TABLE GOLD.DIM_MACHINE",
+                                            tables_used=["GOLD.DIM_MACHINE"]),
+                             tokens_in=10, tokens_out=5)
+
+    with caplog.at_level(logging.WARNING, logger="copilot.agent.graph"):
+        r = answer_question("drop it", RejectedDraftProvider(), FakeSnowflake())
+    assert r.error_type == "validation"
+    assert _warning_for(caplog, "validate node")
+
+
+def test_graph_build_failure_is_logged_by_the_pipeline(caplog):
+    """The outer 'snowflake' arm also catches non-Snowflake faults; only the
+    traceback distinguishes them."""
+    class BrokenSnowflake(FakeSnowflake):
+        def run_query(self, sql, params=()):
+            raise RuntimeError("250001: Could not connect to Snowflake backend")
+
+    with caplog.at_level(logging.WARNING, logger="copilot.agent.pipeline"):
+        r = answer_question("What does MTTR mean?",
+                            PlanningFakeProvider(intent="glossary_lookup"), BrokenSnowflake())
+
+    assert r.error_type == "snowflake"
+    assert r.answer == ("I couldn't reach the warehouse to look up context. Please try "
+                        "again in a moment.")
+    rec = _warning_for(caplog, "graph invocation failed outside any node")
+    assert rec.exc_info is not None
+    assert "Could not connect to Snowflake backend" in caplog.text
