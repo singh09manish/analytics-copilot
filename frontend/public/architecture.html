@@ -60,6 +60,63 @@
 
   code, .mono { font-family: var(--mono); font-size: 0.92em; }
 
+  /* ---------- live demo CTA ---------------------------------------------- */
+  /* The link this page was meant to sit behind also points here by mistake,
+     so the app link has to live at the very top too, not only in the
+     closing paragraph below. Background is accent teal at low alpha over
+     white (#F1F7F8, measured, not eyeballed): ink and muted both clear
+     4.5:1 against it. Accent teal itself does not reliably clear 4.5:1 on
+     that same wash, which is why the URL sits on a solid white chip instead
+     (accent-on-white measures 4.91:1). */
+  .cta {
+    position: relative;
+    background: #F1F7F8;
+    border: 1px solid rgba(14, 124, 140, 0.32);
+    border-left: 4px solid var(--accent);
+    border-radius: 12px;
+    padding: 26px 26px 24px;
+    margin-bottom: 46px;
+  }
+  .cta-head {
+    font-size: clamp(21px, 3.6vw, 26px);
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    font-weight: 700;
+    color: var(--ink);
+    margin: 0 0 13px;
+  }
+  .cta-linkline { margin: 0 0 13px; }
+  .cta-link {
+    display: inline-block;
+    max-width: 100%;
+    font-family: var(--mono);
+    font-size: clamp(16px, 2.8vw, 19px);
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--ground);
+    border: 1.5px solid var(--accent);
+    border-radius: 8px;
+    padding: 11px 16px;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+  .cta-link:hover { background: var(--accent); color: #FFFFFF; }
+  .cta-link:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .cta-link::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+  }
+  .cta-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.55;
+    max-width: 60ch;
+  }
+
   /* ---------- header ---------------------------------------------------- */
 
   .eyebrow {
@@ -293,11 +350,18 @@
     .spec .row { grid-template-columns: 1fr; gap: 5px; }
     .wrap { padding: 34px 16px 56px; }
     section { margin-top: 44px; }
+    .cta { padding: 20px 18px; }
   }
 </style>
 </head>
 <body>
 <div class="wrap">
+
+  <div class="cta">
+    <p class="cta-head">Try the live demo</p>
+    <p class="cta-linkline"><a class="cta-link" href="https://d9hwkll0kck56.cloudfront.net">https://d9hwkll0kck56.cloudfront.net</a></p>
+    <p class="cta-note">Sign-in details are in the email. The first question takes a few seconds while it wakes up.</p>
+  </div>
 
   <header>
     <div class="eyebrow">Analytics Copilot</div>
