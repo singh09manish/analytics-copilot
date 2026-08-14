@@ -3,24 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="light">
 <title>Analytics Copilot — Architecture</title>
 <meta name="description" content="How Analytics Copilot turns a plain-English question into audited SQL against a governed Snowflake warehouse.">
 <style>
+  /* A light document, deliberately: this is read on phones, in bright rooms and
+     on paper. The app itself is a dark console; this page is not the app.
+     Every text pair below clears WCAG AA 4.5:1, and every stroke that carries
+     meaning in the diagrams clears 3:1. --redact is #8A5E10 rather than a
+     brighter ochre because brighter ochres fall under 4.5:1 on a light ground;
+     it is reserved strictly for the masking semantic and is never decorative. */
   :root {
-    --ground: #0B0E11;
-    --panel: #121721;
-    --raised: #171E29;
-    --rule: #232C39;
-    --ink: #E4EAF0;
-    --muted: #8A98A8;
-    --accent: #35C5D8;
-    --redact: #E0A33A;
-    --accent-soft: rgba(53, 197, 216, 0.13);
-    --redact-field: rgba(224, 163, 58, 0.12);
+    --ground: #FFFFFF;
+    --panel: #F6F8FA;
+    --raised: #FAFBFC;
+    --rule: #DCE3EA;
+    --ink: #10161D;
+    --muted: #5A6976;
+    --accent: #0E7C8C;
+    --redact: #8A5E10;
+    --redact-field: rgba(138, 94, 16, 0.10);
     --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    color-scheme: dark;
+    color-scheme: light;
   }
 
   * { box-sizing: border-box; }
@@ -32,7 +37,8 @@
     font-family: var(--sans);
     font-size: 15px;
     line-height: 1.62;
-    -webkit-font-smoothing: antialiased;
+    /* No -webkit-font-smoothing: antialiased here. It thins glyphs, which helps
+       light text on a dark ground and hurts dark text on a light one. */
     text-rendering: optimizeLegibility;
   }
 
@@ -48,7 +54,7 @@
   a {
     color: var(--accent);
     text-decoration: none;
-    border-bottom: 1px solid rgba(53, 197, 216, 0.42);
+    border-bottom: 1px solid rgba(14, 124, 140, 0.45);
   }
   a:hover { border-bottom-color: var(--accent); }
 
@@ -99,7 +105,7 @@
     font-family: var(--mono);
     font-size: 11.5px;
     color: var(--muted);
-    background: var(--panel);
+    background: var(--raised);
     border: 1px solid var(--rule);
     border-radius: 999px;
     padding: 4px 11px;
@@ -225,7 +231,7 @@
   .masknote {
     margin-top: 16px;
     background: var(--redact-field);
-    border: 1px solid rgba(224, 163, 58, 0.34);
+    border: 1px solid rgba(138, 94, 16, 0.34);
     border-radius: 10px;
     padding: 14px 16px;
     font-size: 13.5px;
@@ -325,94 +331,91 @@
 
   <defs>
     <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#4A5768"/>
-    </marker>
-    <marker id="a1c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#35C5D8"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#6E7D8D"/>
     </marker>
   </defs>
 
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
 
     <!-- ===== spine boxes ===== -->
-    <rect x="100" y="24" width="300" height="56" rx="8" fill="#171E29" stroke="#232C39"/>
-    <text x="122" y="50" font-size="15" fill="#E4EAF0">Browser</text>
-    <text x="122" y="69" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">React 19 SPA, built by Vite</text>
+    <rect x="100" y="24" width="300" height="56" rx="8" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="122" y="50" font-size="15" fill="#10161D">Browser</text>
+    <text x="122" y="69" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">React 19 SPA, built by Vite</text>
 
-    <rect x="100" y="118" width="300" height="68" rx="8" fill="#171E29" stroke="#232C39"/>
-    <text x="122" y="144" font-size="15" fill="#E4EAF0">CloudFront</text>
-    <text x="122" y="162" font-size="10.5" fill="#8A98A8">default  →  S3</text>
-    <text x="122" y="178" font-size="10.5" fill="#8A98A8">/api/*   →  ALB</text>
+    <rect x="100" y="118" width="300" height="68" rx="8" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="122" y="144" font-size="15" fill="#10161D">CloudFront</text>
+    <text x="122" y="162" font-size="10.5" fill="#5A6976">default  →  S3</text>
+    <text x="122" y="178" font-size="10.5" fill="#5A6976">/api/*   →  ALB</text>
 
-    <rect x="100" y="226" width="300" height="56" rx="8" fill="#171E29" stroke="#232C39"/>
-    <text x="122" y="252" font-size="14" fill="#E4EAF0">Application Load Balancer</text>
-    <text x="122" y="271" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">HTTP :80  →  task :8000  ·  /healthz</text>
+    <rect x="100" y="226" width="300" height="56" rx="8" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="122" y="252" font-size="14" fill="#10161D">Application Load Balancer</text>
+    <text x="122" y="271" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">HTTP :80  →  task :8000  ·  /healthz</text>
 
     <!-- ===== ECS container ===== -->
-    <rect x="76" y="318" width="348" height="280" rx="11" fill="#0F141C" stroke="#35C5D8" stroke-opacity="0.45" stroke-dasharray="5 4"/>
+    <rect x="76" y="318" width="348" height="280" rx="11" fill="none" stroke="#0E7C8C" stroke-opacity="0.65" stroke-width="1.4" stroke-dasharray="6 4"/>
     <!-- Set along the left edge: the ALB -> FastAPI arrow runs down the middle of
          this container, so a top-left label would be struck through by it. -->
     <text transform="rotate(-90 88 458)" x="88" y="458" text-anchor="middle"
-          font-size="10.5" fill="#35C5D8" letter-spacing="0.7">ECS Fargate · one task · us-east-1</text>
+          font-size="10.5" fill="#0E7C8C" letter-spacing="0.7">ECS Fargate · one task · us-east-1</text>
 
-    <rect x="96" y="354" width="308" height="60" rx="7" fill="#171E29" stroke="#232C39"/>
-    <text x="118" y="380" font-size="14" fill="#E4EAF0">FastAPI</text>
-    <text x="118" y="399" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">JWT auth · /api/chat · request log</text>
+    <rect x="96" y="354" width="308" height="60" rx="7" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="118" y="380" font-size="14" fill="#10161D">FastAPI</text>
+    <text x="118" y="399" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">JWT auth · /api/chat · request log</text>
 
-    <rect x="96" y="432" width="308" height="60" rx="7" fill="#171E29" stroke="#232C39"/>
-    <text x="118" y="458" font-size="14" fill="#E4EAF0">LangGraph agent</text>
-    <text x="118" y="477" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">plan → SQL → guard → execute → answer</text>
+    <rect x="96" y="432" width="308" height="60" rx="7" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="118" y="458" font-size="14" fill="#10161D">LangGraph agent</text>
+    <text x="118" y="477" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">plan → SQL → guard → execute → answer</text>
 
-    <rect x="96" y="510" width="308" height="60" rx="7" fill="#171E29" stroke="#232C39"/>
-    <text x="118" y="536" font-size="14" fill="#E4EAF0">MCP tool server</text>
-    <text x="118" y="555" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">stdio subprocess · re-validates the SQL</text>
+    <rect x="96" y="510" width="308" height="60" rx="7" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="118" y="536" font-size="14" fill="#10161D">MCP tool server</text>
+    <text x="118" y="555" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">stdio subprocess · re-validates the SQL</text>
 
     <!-- ===== Snowflake ===== -->
-    <rect x="76" y="636" width="348" height="138" rx="9" fill="#171E29" stroke="#232C39"/>
-    <text x="96" y="664" font-size="15" fill="#E4EAF0">Snowflake</text>
-    <text x="96" y="682" font-size="11" fill="#8A98A8">MEDTECH_ANALYTICS</text>
-    <line x1="96" y1="694" x2="404" y2="694" stroke="#232C39"/>
-    <text x="96" y="716" font-size="12" fill="#35C5D8">GOLD</text>
-    <text x="152" y="716" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">facts, dimensions, secure views</text>
-    <text x="96" y="740" font-size="12" fill="#35C5D8">COPILOT</text>
-    <text x="168" y="740" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">schema cards, glossary, request log</text>
-    <text x="96" y="762" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">SILVER holds the unmasked source; the read-only role has no grant on it.</text>
+    <rect x="76" y="636" width="348" height="138" rx="9" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="96" y="664" font-size="15" fill="#10161D">Snowflake</text>
+    <text x="96" y="682" font-size="11" fill="#5A6976">MEDTECH_ANALYTICS</text>
+    <line x1="96" y1="694" x2="404" y2="694" stroke="#C3CEDA"/>
+    <text x="96" y="716" font-size="12" fill="#0E7C8C">GOLD</text>
+    <text x="152" y="716" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">facts, dimensions, secure views</text>
+    <text x="96" y="740" font-size="12" fill="#0E7C8C">COPILOT</text>
+    <text x="168" y="740" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">schema cards, glossary, request log</text>
+    <text x="96" y="762" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">SILVER holds the unmasked source; the read-only role has no grant on it.</text>
 
     <!-- ===== right column ===== -->
-    <rect x="540" y="118" width="380" height="68" rx="8" fill="#171E29" stroke="#232C39"/>
-    <text x="562" y="144" font-size="15" fill="#E4EAF0">S3</text>
-    <text x="562" y="162" font-size="10.5" fill="#8A98A8">private bucket · origin access control</text>
-    <text x="562" y="178" font-size="10.5" fill="#8A98A8">the SPA bundle, and this page</text>
+    <rect x="540" y="118" width="380" height="68" rx="8" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="562" y="144" font-size="15" fill="#10161D">S3</text>
+    <text x="562" y="162" font-size="10.5" fill="#5A6976">private bucket · origin access control</text>
+    <text x="562" y="178" font-size="10.5" fill="#5A6976">the SPA bundle, and this page</text>
 
-    <rect x="540" y="432" width="380" height="60" rx="8" fill="#171E29" stroke="#232C39"/>
-    <text x="562" y="458" font-size="14" fill="#E4EAF0">Anthropic API</text>
-    <text x="562" y="477" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">intent, SQL drafting, glossary, summary</text>
+    <rect x="540" y="432" width="380" height="60" rx="8" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="562" y="458" font-size="14" fill="#10161D">Anthropic API</text>
+    <text x="562" y="477" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">intent, SQL drafting, glossary, summary</text>
 
     <!-- ===== role split panel ===== -->
-    <rect x="540" y="540" width="380" height="236" rx="10" fill="#0F141C" stroke="#232C39"/>
-    <text x="560" y="566" font-size="11" fill="#35C5D8" letter-spacing="1.3">ROLE SPLIT</text>
-    <text x="560" y="588" font-size="12.5" fill="#E4EAF0" font-family="ui-sans-serif, system-ui, sans-serif">One JWT claim selects one Snowflake role.</text>
+    <rect x="540" y="540" width="380" height="236" rx="10" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="560" y="566" font-size="11" fill="#0E7C8C" letter-spacing="1.3">ROLE SPLIT</text>
+    <text x="560" y="588" font-size="12.5" fill="#10161D" font-family="ui-sans-serif, system-ui, sans-serif">One JWT claim selects one Snowflake role.</text>
 
-    <rect x="560" y="604" width="84" height="26" rx="5" fill="#171E29" stroke="#2E3A49"/>
-    <text x="602" y="621" font-size="12" fill="#E4EAF0" text-anchor="middle">analyst</text>
-    <line x1="652" y1="617" x2="678" y2="617" stroke="#4A5768" stroke-width="1.4" marker-end="url(#a1)"/>
-    <rect x="688" y="604" width="164" height="26" rx="5" fill="#171E29" stroke="#2E3A49"/>
-    <text x="770" y="621" font-size="12" fill="#E4EAF0" text-anchor="middle">COPILOT_APP_RO</text>
-    <text x="560" y="649" font-size="11" fill="#E0A33A" font-family="ui-sans-serif, system-ui, sans-serif">reads GOLD · contact_email = ***MASKED***</text>
+    <rect x="560" y="604" width="84" height="26" rx="5" fill="#F6F8FA" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="602" y="621" font-size="12" fill="#10161D" text-anchor="middle">analyst</text>
+    <line x1="652" y1="617" x2="678" y2="617" stroke="#6E7D8D" stroke-width="1.4" marker-end="url(#a1)"/>
+    <rect x="688" y="604" width="164" height="26" rx="5" fill="#F6F8FA" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="770" y="621" font-size="12" fill="#10161D" text-anchor="middle">COPILOT_APP_RO</text>
+    <text x="560" y="649" font-size="11" fill="#8A5E10" font-family="ui-sans-serif, system-ui, sans-serif">reads GOLD · contact_email = ***MASKED***</text>
 
-    <rect x="560" y="666" width="84" height="26" rx="5" fill="#171E29" stroke="#2E3A49"/>
-    <text x="602" y="683" font-size="12" fill="#E4EAF0" text-anchor="middle">admin</text>
-    <line x1="652" y1="679" x2="678" y2="679" stroke="#4A5768" stroke-width="1.4" marker-end="url(#a1)"/>
-    <rect x="688" y="666" width="164" height="26" rx="5" fill="#171E29" stroke="#2E3A49"/>
-    <text x="770" y="683" font-size="12" fill="#E4EAF0" text-anchor="middle">COPILOT_ADMIN</text>
-    <text x="560" y="711" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">reads GOLD · contact_email in the clear</text>
+    <rect x="560" y="666" width="84" height="26" rx="5" fill="#F6F8FA" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="602" y="683" font-size="12" fill="#10161D" text-anchor="middle">admin</text>
+    <line x1="652" y1="679" x2="678" y2="679" stroke="#6E7D8D" stroke-width="1.4" marker-end="url(#a1)"/>
+    <rect x="688" y="666" width="164" height="26" rx="5" fill="#F6F8FA" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="770" y="683" font-size="12" fill="#10161D" text-anchor="middle">COPILOT_ADMIN</text>
+    <text x="560" y="711" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">reads GOLD · contact_email in the clear</text>
 
-    <line x1="560" y1="727" x2="900" y2="727" stroke="#232C39"/>
-    <text x="560" y="747" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">GOLD.DIM_TREATMENT_CENTER is a Snowflake secure view;</text>
-    <text x="560" y="763" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">contact_email CASEs on CURRENT_ROLE().</text>
+    <line x1="560" y1="727" x2="900" y2="727" stroke="#C3CEDA"/>
+    <text x="560" y="747" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">GOLD.DIM_TREATMENT_CENTER is a Snowflake secure view;</text>
+    <text x="560" y="763" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">contact_email CASEs on CURRENT_ROLE().</text>
 
     <!-- ===== edges ===== -->
-    <g stroke="#4A5768" stroke-width="1.6" fill="none">
+    <g stroke="#6E7D8D" stroke-width="1.6" fill="none">
       <path d="M250,80 L250,114" marker-end="url(#a1)"/>
       <path d="M400,152 L534,152" marker-end="url(#a1)"/>
       <path d="M250,186 L250,222" marker-end="url(#a1)"/>
@@ -424,17 +427,17 @@
     </g>
 
     <!-- retrieval bypass path -->
-    <path d="M404,478 L470,478 L470,700 L428,700" fill="none" stroke="#4A5768" stroke-width="1.4"
-          stroke-dasharray="4 4" marker-end="url(#a1)"/>
-    <text x="478" y="618" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">retrieval</text>
+    <path d="M404,478 L470,478 L470,700 L428,700" fill="none" stroke="#6E7D8D" stroke-width="1.6"
+          stroke-dasharray="6 3.5" marker-end="url(#a1)"/>
+    <text x="478" y="618" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">retrieval</text>
 
-    <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#8A98A8">
+    <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#5A6976">
       <text x="467" y="143" text-anchor="middle">default behaviour</text>
       <text x="469" y="453" text-anchor="middle">model calls</text>
     </g>
-    <text x="262" y="209" font-size="10.5" fill="#8A98A8">/api/*</text>
-    <text x="262" y="306" font-size="10.5" fill="#8A98A8">Authorization: Bearer &lt;JWT&gt;</text>
-    <text x="264" y="620" font-size="10.5" fill="#8A98A8">as the caller's Snowflake role</text>
+    <text x="262" y="209" font-size="10.5" fill="#5A6976">/api/*</text>
+    <text x="262" y="306" font-size="10.5" fill="#5A6976">Authorization: Bearer &lt;JWT&gt;</text>
+    <text x="264" y="620" font-size="10.5" fill="#5A6976">as the caller's Snowflake role</text>
 
   </g>
 </svg>
@@ -460,81 +463,81 @@
 
   <defs>
     <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#4A5768"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#6E7D8D"/>
     </marker>
     <marker id="a2w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#7C8899"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#3A4757"/>
     </marker>
   </defs>
 
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
 
     <!-- ===== legend ===== -->
-    <rect x="540" y="24" width="380" height="80" rx="9" fill="#0F141C" stroke="#232C39"/>
-    <text x="560" y="46" font-size="11" fill="#35C5D8" letter-spacing="1.3">LEGEND</text>
-    <rect x="560" y="58" width="24" height="15" rx="3" fill="#171E29" stroke="#35C5D8"/>
-    <rect x="560" y="58" width="3" height="15" fill="#35C5D8"/>
-    <text x="596" y="70" font-size="11" fill="#E4EAF0" font-family="ui-sans-serif, system-ui, sans-serif">calls the Anthropic API</text>
-    <rect x="560" y="80" width="24" height="15" rx="3" fill="#171E29" stroke="#232C39"/>
-    <rect x="560" y="80" width="3" height="15" fill="#2E3A49"/>
-    <text x="596" y="92" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">deterministic — no model call</text>
+    <rect x="540" y="24" width="380" height="80" rx="9" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <text x="560" y="46" font-size="11" fill="#0E7C8C" letter-spacing="1.3">LEGEND</text>
+    <rect x="560" y="58" width="24" height="15" rx="3" fill="#FFFFFF" stroke="#0E7C8C" stroke-width="1.5"/>
+    <rect x="560" y="58" width="3" height="15" fill="#0E7C8C"/>
+    <text x="596" y="70" font-size="11" fill="#10161D" font-family="ui-sans-serif, system-ui, sans-serif">calls the Anthropic API</text>
+    <rect x="560" y="80" width="24" height="15" rx="3" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <rect x="560" y="80" width="3" height="15" fill="#5A6976"/>
+    <text x="596" y="92" font-size="11" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">deterministic — no model call</text>
 
     <!-- ===== START / END ===== -->
-    <rect x="285" y="24" width="110" height="30" rx="15" fill="#0F141C" stroke="#35C5D8" stroke-opacity="0.55"/>
-    <text x="340" y="44" font-size="11.5" fill="#35C5D8" text-anchor="middle" letter-spacing="1.2">START</text>
+    <rect x="285" y="24" width="110" height="30" rx="15" fill="#FFFFFF" stroke="#0E7C8C" stroke-opacity="0.85" stroke-width="1.4"/>
+    <text x="340" y="44" font-size="11.5" fill="#0E7C8C" text-anchor="middle" letter-spacing="1.2">START</text>
 
-    <rect x="605" y="846" width="90" height="30" rx="15" fill="#0F141C" stroke="#35C5D8" stroke-opacity="0.55"/>
-    <text x="650" y="866" font-size="11.5" fill="#35C5D8" text-anchor="middle" letter-spacing="1.2">END</text>
+    <rect x="605" y="846" width="90" height="30" rx="15" fill="#FFFFFF" stroke="#0E7C8C" stroke-opacity="0.85" stroke-width="1.4"/>
+    <text x="650" y="866" font-size="11.5" fill="#0E7C8C" text-anchor="middle" letter-spacing="1.2">END</text>
 
     <!-- ===== spine nodes ===== -->
-    <rect x="250" y="86" width="180" height="56" rx="7" fill="#171E29" stroke="#35C5D8"/>
-    <rect x="250" y="86" width="3" height="56" fill="#35C5D8"/>
-    <text x="268" y="111" font-size="14" fill="#E4EAF0">plan</text>
-    <text x="268" y="129" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">classify the intent</text>
+    <rect x="250" y="86" width="180" height="56" rx="7" fill="#FFFFFF" stroke="#0E7C8C" stroke-width="1.5"/>
+    <rect x="250" y="86" width="3" height="56" fill="#0E7C8C"/>
+    <text x="268" y="111" font-size="14" fill="#10161D">plan</text>
+    <text x="268" y="129" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">classify the intent</text>
 
-    <rect x="250" y="196" width="180" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
-    <rect x="250" y="196" width="3" height="56" fill="#2E3A49"/>
-    <text x="268" y="221" font-size="14" fill="#E4EAF0">retrieve</text>
-    <text x="268" y="239" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">schema cards + glossary</text>
+    <rect x="250" y="196" width="180" height="56" rx="7" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <rect x="250" y="196" width="3" height="56" fill="#5A6976"/>
+    <text x="268" y="221" font-size="14" fill="#10161D">retrieve</text>
+    <text x="268" y="239" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">schema cards + glossary</text>
 
-    <rect x="250" y="306" width="180" height="56" rx="7" fill="#171E29" stroke="#35C5D8"/>
-    <rect x="250" y="306" width="3" height="56" fill="#35C5D8"/>
-    <text x="268" y="331" font-size="14" fill="#E4EAF0">generate</text>
-    <text x="268" y="349" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">draft the SQL</text>
+    <rect x="250" y="306" width="180" height="56" rx="7" fill="#FFFFFF" stroke="#0E7C8C" stroke-width="1.5"/>
+    <rect x="250" y="306" width="3" height="56" fill="#0E7C8C"/>
+    <text x="268" y="331" font-size="14" fill="#10161D">generate</text>
+    <text x="268" y="349" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">draft the SQL</text>
 
-    <rect x="250" y="416" width="180" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
-    <rect x="250" y="416" width="3" height="56" fill="#2E3A49"/>
-    <text x="268" y="441" font-size="14" fill="#E4EAF0">validate</text>
-    <text x="268" y="459" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">sqlglot guard</text>
+    <rect x="250" y="416" width="180" height="56" rx="7" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <rect x="250" y="416" width="3" height="56" fill="#5A6976"/>
+    <text x="268" y="441" font-size="14" fill="#10161D">validate</text>
+    <text x="268" y="459" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">sqlglot guard</text>
 
-    <rect x="250" y="526" width="180" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
-    <rect x="250" y="526" width="3" height="56" fill="#2E3A49"/>
-    <text x="268" y="551" font-size="14" fill="#E4EAF0">execute</text>
-    <text x="268" y="569" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">run it in Snowflake</text>
+    <rect x="250" y="526" width="180" height="56" rx="7" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <rect x="250" y="526" width="3" height="56" fill="#5A6976"/>
+    <text x="268" y="551" font-size="14" fill="#10161D">execute</text>
+    <text x="268" y="569" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">run it in Snowflake</text>
 
-    <rect x="250" y="636" width="180" height="56" rx="7" fill="#171E29" stroke="#35C5D8"/>
-    <rect x="250" y="636" width="3" height="56" fill="#35C5D8"/>
-    <text x="268" y="661" font-size="14" fill="#E4EAF0">summarize</text>
-    <text x="268" y="679" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">write the answer</text>
+    <rect x="250" y="636" width="180" height="56" rx="7" fill="#FFFFFF" stroke="#0E7C8C" stroke-width="1.5"/>
+    <rect x="250" y="636" width="3" height="56" fill="#0E7C8C"/>
+    <text x="268" y="661" font-size="14" fill="#10161D">summarize</text>
+    <text x="268" y="679" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">write the answer</text>
 
-    <rect x="560" y="748" width="180" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
-    <rect x="560" y="748" width="3" height="56" fill="#2E3A49"/>
-    <text x="578" y="773" font-size="14" fill="#E4EAF0">remember</text>
-    <text x="578" y="791" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">keep the last 6 turns</text>
+    <rect x="560" y="748" width="180" height="56" rx="7" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <rect x="560" y="748" width="3" height="56" fill="#5A6976"/>
+    <text x="578" y="773" font-size="14" fill="#10161D">remember</text>
+    <text x="578" y="791" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">keep the last 6 turns</text>
 
     <!-- ===== left-branch nodes ===== -->
-    <rect x="24" y="196" width="160" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
-    <rect x="24" y="196" width="3" height="56" fill="#2E3A49"/>
-    <text x="42" y="221" font-size="13" fill="#E4EAF0">scope_reply</text>
-    <text x="42" y="239" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">fixed scope message</text>
+    <rect x="24" y="196" width="160" height="56" rx="7" fill="#FFFFFF" stroke="#7E8C9B" stroke-width="1.1"/>
+    <rect x="24" y="196" width="3" height="56" fill="#5A6976"/>
+    <text x="42" y="221" font-size="13" fill="#10161D">scope_reply</text>
+    <text x="42" y="239" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">fixed scope message</text>
 
-    <rect x="24" y="306" width="160" height="56" rx="7" fill="#171E29" stroke="#35C5D8"/>
-    <rect x="24" y="306" width="3" height="56" fill="#35C5D8"/>
-    <text x="42" y="331" font-size="13" fill="#E4EAF0">glossary_answer</text>
-    <text x="42" y="349" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">define the term</text>
+    <rect x="24" y="306" width="160" height="56" rx="7" fill="#FFFFFF" stroke="#0E7C8C" stroke-width="1.5"/>
+    <rect x="24" y="306" width="3" height="56" fill="#0E7C8C"/>
+    <text x="42" y="331" font-size="13" fill="#10161D">glossary_answer</text>
+    <text x="42" y="349" font-size="10.5" fill="#5A6976" font-family="ui-sans-serif, system-ui, sans-serif">define the term</text>
 
     <!-- ===== spine edges ===== -->
-    <g stroke="#4A5768" stroke-width="1.6" fill="none">
+    <g stroke="#6E7D8D" stroke-width="1.6" fill="none">
       <path d="M340,54 L340,82" marker-end="url(#a2)"/>
       <path d="M340,142 L340,192" marker-end="url(#a2)"/>
       <path d="M340,252 L340,302" marker-end="url(#a2)"/>
@@ -546,16 +549,16 @@
     <!-- ===== branch edges to the left column ===== -->
     <!-- retrieve leaves from its underside, not its left edge: a left-edge exit at
          y=224 would run straight through the scope_reply box sitting beside it. -->
-    <g stroke="#4A5768" stroke-width="1.6" fill="none">
+    <g stroke="#6E7D8D" stroke-width="1.6" fill="none">
       <path d="M250,108 L104,108 L104,192" marker-end="url(#a2)"/>
       <path d="M290,252 L290,278 L104,278 L104,302" marker-end="url(#a2)"/>
     </g>
 
     <!-- ===== repair loop ===== -->
-    <path d="M250,554 L222,554 L222,334 L246,334" fill="none" stroke="#7C8899" stroke-width="1.8" marker-end="url(#a2w)"/>
+    <path d="M250,554 L222,554 L222,334 L246,334" fill="none" stroke="#3A4757" stroke-width="1.8" marker-end="url(#a2w)"/>
 
     <!-- ===== error / terminal edges into remember ===== -->
-    <g stroke="#4A5768" stroke-width="1.6" fill="none">
+    <g stroke="#6E7D8D" stroke-width="1.6" fill="none">
       <path d="M430,130 L700,130 L700,744" marker-end="url(#a2)"/>
       <path d="M430,330 L660,330 L660,744" marker-end="url(#a2)"/>
       <path d="M430,440 L620,440 L620,744" marker-end="url(#a2)"/>
@@ -567,7 +570,7 @@
     </g>
 
     <!-- ===== edge labels ===== -->
-    <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#8A98A8">
+    <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#5A6976">
       <text x="114" y="152">smalltalk</text>
       <text x="114" y="166">unsupported</text>
       <text x="196" y="271">glossary_lookup</text>
@@ -580,7 +583,7 @@
       <text x="440" y="322">LLM error</text>
       <text x="440" y="432">guard rejected — no repair</text>
       <text x="440" y="542">exec error, repair_count &gt; 1</text>
-      <text x="212" y="438" text-anchor="end" fill="#B7C2CF">exec error, repair_count ≤ 1</text>
+      <text x="212" y="438" text-anchor="end" fill="#10161D">exec error, repair_count ≤ 1</text>
       <text x="212" y="453" text-anchor="end">exactly one retry</text>
     </g>
 
