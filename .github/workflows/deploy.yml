@@ -127,15 +127,25 @@ jobs:
 
       # Hashed assets are immutable and cached hard; index.html must never be, or
       # browsers keep loading the previous build's asset names.
+      #
+      # architecture.html is excluded for the same reason by a different route: it
+      # is a hand-authored page at a stable, unhashed path that was sent to people
+      # outside this repo. A one-year immutable header would pin a wrong diagram or
+      # a wrong claim in their browsers for a year with no way to reach them, since
+      # a CloudFront invalidation cannot evict a browser cache. Both files are
+      # therefore uploaded separately with no-cache. Hashed assets keep the
+      # immutable header exactly as before.
       - name: Publish the SPA
         env:
           WEB_BUCKET: ${{ vars.WEB_BUCKET }}
         run: |
           aws s3 sync frontend/dist "s3://$WEB_BUCKET" \
             --delete --cache-control "public,max-age=31536000,immutable" \
-            --exclude index.html
-          aws s3 cp frontend/dist/index.html "s3://$WEB_BUCKET/index.html" \
-            --cache-control "no-cache,no-store,must-revalidate"
+            --exclude index.html --exclude architecture.html
+          for f in index.html architecture.html; do
+            aws s3 cp "frontend/dist/$f" "s3://$WEB_BUCKET/$f" \
+              --cache-control "no-cache,no-store,must-revalidate"
+          done
 
       - name: Invalidate the CDN
         env:

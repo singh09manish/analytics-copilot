@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Analytics Copilot — Architecture</title>
+<meta name="description" content="How Analytics Copilot turns a plain-English question into audited SQL against a governed Snowflake warehouse.">
+<style>
+  :root {
+    --ground: #0B0E11;
+    --panel: #121721;
+    --raised: #171E29;
+    --rule: #232C39;
+    --ink: #E4EAF0;
+    --muted: #8A98A8;
+    --accent: #35C5D8;
+    --redact: #E0A33A;
+    --accent-soft: rgba(53, 197, 216, 0.13);
+    --redact-field: rgba(224, 163, 58, 0.12);
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 48px 22px 72px;
+  }
+
+  h1, h2, h3, p, ul, ol, dl, dd, figure { margin: 0; }
+  ul { padding: 0; list-style: none; }
+
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(53, 197, 216, 0.42);
+  }
+  a:hover { border-bottom-color: var(--accent); }
+
+  code, .mono { font-family: var(--mono); font-size: 0.92em; }
+
+  /* ---------- header ---------------------------------------------------- */
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .eyebrow::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+  }
+
+  h1 {
+    font-size: clamp(28px, 5vw, 40px);
+    line-height: 1.14;
+    letter-spacing: -0.02em;
+    font-weight: 600;
+    margin: 18px 0 16px;
+  }
+
+  .lede {
+    font-size: clamp(16px, 2.2vw, 18px);
+    line-height: 1.58;
+    color: var(--ink);
+    max-width: 68ch;
+  }
+  .lede + .lede { margin-top: 12px; color: var(--muted); }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 26px;
+  }
+  .chip {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    padding: 4px 11px;
+    white-space: nowrap;
+  }
+
+  /* ---------- sections -------------------------------------------------- */
+
+  section { margin-top: 56px; }
+
+  .shead {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .snum {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    letter-spacing: 0.1em;
+  }
+  h2 {
+    font-size: clamp(20px, 3vw, 25px);
+    letter-spacing: -0.01em;
+    font-weight: 600;
+  }
+  .sintro {
+    color: var(--muted);
+    max-width: 74ch;
+    margin-bottom: 20px;
+    font-size: 14.5px;
+  }
+
+  /* ---------- figures --------------------------------------------------- */
+
+  figure {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 18px 18px 4px;
+  }
+  .scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+  .scroll svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  #sys { min-width: 720px; }
+  #agentgraph { min-width: 700px; }
+
+  figcaption {
+    border-top: 1px solid var(--rule);
+    margin-top: 14px;
+    padding: 13px 2px 16px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  figcaption strong { color: var(--ink); font-weight: 600; }
+
+  .hint {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+    margin-bottom: 10px;
+  }
+  @media (min-width: 780px) { .hint { display: none; } }
+
+  /* ---------- governance layers ----------------------------------------- */
+
+  .layers {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+  }
+  .layer {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 16px 17px 18px;
+  }
+  .layer .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .layer h3 {
+    font-family: var(--mono);
+    font-size: 14.5px;
+    font-weight: 500;
+    color: var(--ink);
+    margin: 5px 0 10px;
+  }
+  .layer p { font-size: 13.5px; line-height: 1.55; }
+  .layer .not {
+    margin-top: 11px;
+    padding-top: 11px;
+    border-top: 1px solid var(--rule);
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .layer .not b {
+    color: var(--muted);
+    font-weight: 600;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 3px;
+  }
+
+  .masknote {
+    margin-top: 16px;
+    background: var(--redact-field);
+    border: 1px solid rgba(224, 163, 58, 0.34);
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+  .maskkey {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--redact);
+    display: block;
+    margin-bottom: 5px;
+  }
+  .masked { color: var(--redact); font-family: var(--mono); }
+
+  /* ---------- honest spec sheet ----------------------------------------- */
+
+  .spec {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .spec .row {
+    display: grid;
+    grid-template-columns: 168px 1fr;
+    gap: 20px;
+    padding: 15px 18px;
+    border-top: 1px solid var(--rule);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .spec .row:first-child { border-top: 0; }
+  .spec dt {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-top: 3px;
+  }
+  .spec dd { margin: 0; }
+
+  /* ---------- closing --------------------------------------------------- */
+
+  .closing {
+    margin-top: 56px;
+    border-top: 1px solid var(--rule);
+    padding-top: 26px;
+    font-size: 15px;
+    line-height: 1.62;
+    max-width: 72ch;
+  }
+  .closing p + p { margin-top: 12px; color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 820px) {
+    .layers { grid-template-columns: 1fr; }
+    .spec .row { grid-template-columns: 1fr; gap: 5px; }
+    .wrap { padding: 34px 16px 56px; }
+    section { margin-top: 44px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Analytics Copilot</div>
+    <h1>A plain-English question, an auditable answer.</h1>
+    <p class="lede">Analytics Copilot is a chat interface where a business user asks a question in plain English and gets the answer back from a governed Snowflake warehouse. Every answer that ran a query carries the SQL that produced it, so any number on the screen can be traced back to the query behind it.</p>
+    <p class="lede">This page is the architecture behind the demo: how a question travels, what the agent actually does, and where the boundaries are. It is written to be checked — everything below is drawn from the code, and the honest limits are set out at the end.</p>
+    <div class="chips">
+      <span class="chip">React 19 + Vite</span>
+      <span class="chip">CloudFront + S3</span>
+      <span class="chip">FastAPI on ECS Fargate</span>
+      <span class="chip">LangGraph</span>
+      <span class="chip">MCP tool server</span>
+      <span class="chip">Snowflake</span>
+      <span class="chip">sqlglot guard</span>
+      <span class="chip">Claude via the Anthropic API</span>
+    </div>
+  </header>
+
+  <!-- ================= 1. SYSTEM ARCHITECTURE ========================== -->
+  <section>
+    <div class="shead"><span class="snum">01</span><h2>How a question travels</h2></div>
+    <p class="sintro">One hostname, two origins. Static files come from S3; anything under <code>/api/*</code> goes to the load balancer in front of a single ECS Fargate task that runs both the API and the agent. The role split on the right is the point of the whole system, so it is drawn rather than described.</p>
+
+    <figure>
+      <p class="hint">↔ scroll the diagram</p>
+      <div class="scroll">
+<svg id="sys" viewBox="0 0 960 800" preserveAspectRatio="xMidYMid meet" role="img"
+     aria-label="System architecture. A browser calls CloudFront, which serves the React app from a private S3 bucket on its default behaviour and routes slash-api requests to an Application Load Balancer. The load balancer forwards to a single ECS Fargate task running FastAPI, the LangGraph agent, and an MCP tool server as a stdio subprocess. The MCP server queries Snowflake as the caller's role. The Anthropic API sits to the side for model calls. A role panel shows the JWT claim analyst mapping to the Snowflake role COPILOT_APP_RO, which reads GOLD with contact_email masked, and admin mapping to COPILOT_ADMIN, which reads the same rows with contact_email in the clear.">
+  <title>Analytics Copilot — system architecture</title>
+  <desc>Browser to CloudFront to S3 and to an Application Load Balancer, then to an ECS Fargate task running FastAPI, a LangGraph agent and an MCP tool server, then to Snowflake, with the Anthropic API to the side and the JWT-role-to-Snowflake-role mapping shown explicitly.</desc>
+
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4A5768"/>
+    </marker>
+    <marker id="a1c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#35C5D8"/>
+    </marker>
+  </defs>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+
+    <!-- ===== spine boxes ===== -->
+    <rect x="100" y="24" width="300" height="56" rx="8" fill="#171E29" stroke="#232C39"/>
+    <text x="122" y="50" font-size="15" fill="#E4EAF0">Browser</text>
+    <text x="122" y="69" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">React 19 SPA, built by Vite</text>
+
+    <rect x="100" y="118" width="300" height="68" rx="8" fill="#171E29" stroke="#232C39"/>
+    <text x="122" y="144" font-size="15" fill="#E4EAF0">CloudFront</text>
+    <text x="122" y="162" font-size="10.5" fill="#8A98A8">default  →  S3</text>
+    <text x="122" y="178" font-size="10.5" fill="#8A98A8">/api/*   →  ALB</text>
+
+    <rect x="100" y="226" width="300" height="56" rx="8" fill="#171E29" stroke="#232C39"/>
+    <text x="122" y="252" font-size="14" fill="#E4EAF0">Application Load Balancer</text>
+    <text x="122" y="271" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">HTTP :80  →  task :8000  ·  /healthz</text>
+
+    <!-- ===== ECS container ===== -->
+    <rect x="76" y="318" width="348" height="280" rx="11" fill="#0F141C" stroke="#35C5D8" stroke-opacity="0.45" stroke-dasharray="5 4"/>
+    <!-- Set along the left edge: the ALB -> FastAPI arrow runs down the middle of
+         this container, so a top-left label would be struck through by it. -->
+    <text transform="rotate(-90 88 458)" x="88" y="458" text-anchor="middle"
+          font-size="10.5" fill="#35C5D8" letter-spacing="0.7">ECS Fargate · one task · us-east-1</text>
+
+    <rect x="96" y="354" width="308" height="60" rx="7" fill="#171E29" stroke="#232C39"/>
+    <text x="118" y="380" font-size="14" fill="#E4EAF0">FastAPI</text>
+    <text x="118" y="399" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">JWT auth · /api/chat · request log</text>
+
+    <rect x="96" y="432" width="308" height="60" rx="7" fill="#171E29" stroke="#232C39"/>
+    <text x="118" y="458" font-size="14" fill="#E4EAF0">LangGraph agent</text>
+    <text x="118" y="477" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">plan → SQL → guard → execute → answer</text>
+
+    <rect x="96" y="510" width="308" height="60" rx="7" fill="#171E29" stroke="#232C39"/>
+    <text x="118" y="536" font-size="14" fill="#E4EAF0">MCP tool server</text>
+    <text x="118" y="555" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">stdio subprocess · re-validates the SQL</text>
+
+    <!-- ===== Snowflake ===== -->
+    <rect x="76" y="636" width="348" height="138" rx="9" fill="#171E29" stroke="#232C39"/>
+    <text x="96" y="664" font-size="15" fill="#E4EAF0">Snowflake</text>
+    <text x="96" y="682" font-size="11" fill="#8A98A8">MEDTECH_ANALYTICS</text>
+    <line x1="96" y1="694" x2="404" y2="694" stroke="#232C39"/>
+    <text x="96" y="716" font-size="12" fill="#35C5D8">GOLD</text>
+    <text x="152" y="716" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">facts, dimensions, secure views</text>
+    <text x="96" y="740" font-size="12" fill="#35C5D8">COPILOT</text>
+    <text x="168" y="740" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">schema cards, glossary, request log</text>
+    <text x="96" y="762" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">SILVER holds the unmasked source; the read-only role has no grant on it.</text>
+
+    <!-- ===== right column ===== -->
+    <rect x="540" y="118" width="380" height="68" rx="8" fill="#171E29" stroke="#232C39"/>
+    <text x="562" y="144" font-size="15" fill="#E4EAF0">S3</text>
+    <text x="562" y="162" font-size="10.5" fill="#8A98A8">private bucket · origin access control</text>
+    <text x="562" y="178" font-size="10.5" fill="#8A98A8">the SPA bundle, and this page</text>
+
+    <rect x="540" y="432" width="380" height="60" rx="8" fill="#171E29" stroke="#232C39"/>
+    <text x="562" y="458" font-size="14" fill="#E4EAF0">Anthropic API</text>
+    <text x="562" y="477" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">intent, SQL drafting, glossary, summary</text>
+
+    <!-- ===== role split panel ===== -->
+    <rect x="540" y="540" width="380" height="236" rx="10" fill="#0F141C" stroke="#232C39"/>
+    <text x="560" y="566" font-size="11" fill="#35C5D8" letter-spacing="1.3">ROLE SPLIT</text>
+    <text x="560" y="588" font-size="12.5" fill="#E4EAF0" font-family="ui-sans-serif, system-ui, sans-serif">One JWT claim selects one Snowflake role.</text>
+
+    <rect x="560" y="604" width="84" height="26" rx="5" fill="#171E29" stroke="#2E3A49"/>
+    <text x="602" y="621" font-size="12" fill="#E4EAF0" text-anchor="middle">analyst</text>
+    <line x1="652" y1="617" x2="678" y2="617" stroke="#4A5768" stroke-width="1.4" marker-end="url(#a1)"/>
+    <rect x="688" y="604" width="164" height="26" rx="5" fill="#171E29" stroke="#2E3A49"/>
+    <text x="770" y="621" font-size="12" fill="#E4EAF0" text-anchor="middle">COPILOT_APP_RO</text>
+    <text x="560" y="649" font-size="11" fill="#E0A33A" font-family="ui-sans-serif, system-ui, sans-serif">reads GOLD · contact_email = ***MASKED***</text>
+
+    <rect x="560" y="666" width="84" height="26" rx="5" fill="#171E29" stroke="#2E3A49"/>
+    <text x="602" y="683" font-size="12" fill="#E4EAF0" text-anchor="middle">admin</text>
+    <line x1="652" y1="679" x2="678" y2="679" stroke="#4A5768" stroke-width="1.4" marker-end="url(#a1)"/>
+    <rect x="688" y="666" width="164" height="26" rx="5" fill="#171E29" stroke="#2E3A49"/>
+    <text x="770" y="683" font-size="12" fill="#E4EAF0" text-anchor="middle">COPILOT_ADMIN</text>
+    <text x="560" y="711" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">reads GOLD · contact_email in the clear</text>
+
+    <line x1="560" y1="727" x2="900" y2="727" stroke="#232C39"/>
+    <text x="560" y="747" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">GOLD.DIM_TREATMENT_CENTER is a Snowflake secure view;</text>
+    <text x="560" y="763" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">contact_email CASEs on CURRENT_ROLE().</text>
+
+    <!-- ===== edges ===== -->
+    <g stroke="#4A5768" stroke-width="1.6" fill="none">
+      <path d="M250,80 L250,114" marker-end="url(#a1)"/>
+      <path d="M400,152 L534,152" marker-end="url(#a1)"/>
+      <path d="M250,186 L250,222" marker-end="url(#a1)"/>
+      <path d="M250,282 L250,350" marker-end="url(#a1)"/>
+      <path d="M250,414 L250,428" marker-end="url(#a1)"/>
+      <path d="M250,492 L250,506" marker-end="url(#a1)"/>
+      <path d="M250,570 L250,632" marker-end="url(#a1)"/>
+      <path d="M404,462 L534,462" marker-end="url(#a1)"/>
+    </g>
+
+    <!-- retrieval bypass path -->
+    <path d="M404,478 L470,478 L470,700 L428,700" fill="none" stroke="#4A5768" stroke-width="1.4"
+          stroke-dasharray="4 4" marker-end="url(#a1)"/>
+    <text x="478" y="618" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">retrieval</text>
+
+    <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#8A98A8">
+      <text x="467" y="143" text-anchor="middle">default behaviour</text>
+      <text x="469" y="453" text-anchor="middle">model calls</text>
+    </g>
+    <text x="262" y="209" font-size="10.5" fill="#8A98A8">/api/*</text>
+    <text x="262" y="306" font-size="10.5" fill="#8A98A8">Authorization: Bearer &lt;JWT&gt;</text>
+    <text x="264" y="620" font-size="10.5" fill="#8A98A8">as the caller's Snowflake role</text>
+
+  </g>
+</svg>
+      </div>
+      <figcaption>
+        <strong>The dashed path is retrieval.</strong> Before it drafts any SQL, the agent reads schema cards and glossary entries out of <code>MEDTECH_ANALYTICS.COPILOT</code> itself, ranked by Snowflake Cortex embeddings with a keyword fallback if Cortex is unavailable. That SQL is written by the application, not by the model, so it does not pass through the guard — which is exactly why the guard's allow-list is <code>GOLD</code> and nothing else. Model-authored SQL can never reach the schema that holds every user's logged questions.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ================= 2. AGENT GRAPH ================================== -->
+  <section>
+    <div class="shead"><span class="snum">02</span><h2>The agent graph</h2></div>
+    <p class="sintro">Every node and every edge of the LangGraph <code>StateGraph</code>, transcribed from <code>backend/src/copilot/agent/graph.py</code>. Four nodes call the model; five are deterministic. Every path converges on <code>remember</code>, so a turn is recorded whether it succeeded or failed.</p>
+
+    <figure>
+      <p class="hint">↔ scroll the diagram</p>
+      <div class="scroll">
+<svg id="agentgraph" viewBox="0 0 940 900" preserveAspectRatio="xMidYMid meet" role="img"
+     aria-label="The LangGraph agent graph. START enters plan. Plan branches on intent: smalltalk or unsupported go to scope_reply; data_query or glossary_lookup go to retrieve; an LLM error goes straight to remember. Retrieve branches to glossary_answer for glossary_lookup or to generate for data_query. Generate goes to validate, or to remember on an LLM error. Validate goes to execute, or on a guard rejection straight to remember with no repair. Execute loops back to generate exactly once on an execution error, gives up to remember on the second failure, and otherwise goes to summarize. Scope_reply, glossary_answer and summarize all go to remember, and remember goes to END. Plan, generate, glossary_answer and summarize call the Anthropic API; scope_reply, retrieve, validate, execute and remember are deterministic.">
+  <title>Analytics Copilot — the LangGraph agent graph</title>
+  <desc>Nine nodes and every edge between them, including the single-attempt repair loop from execute back to generate and the guard-rejection edge from validate straight to remember.</desc>
+
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4A5768"/>
+    </marker>
+    <marker id="a2w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7C8899"/>
+    </marker>
+  </defs>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+
+    <!-- ===== legend ===== -->
+    <rect x="540" y="24" width="380" height="80" rx="9" fill="#0F141C" stroke="#232C39"/>
+    <text x="560" y="46" font-size="11" fill="#35C5D8" letter-spacing="1.3">LEGEND</text>
+    <rect x="560" y="58" width="24" height="15" rx="3" fill="#171E29" stroke="#35C5D8"/>
+    <rect x="560" y="58" width="3" height="15" fill="#35C5D8"/>
+    <text x="596" y="70" font-size="11" fill="#E4EAF0" font-family="ui-sans-serif, system-ui, sans-serif">calls the Anthropic API</text>
+    <rect x="560" y="80" width="24" height="15" rx="3" fill="#171E29" stroke="#232C39"/>
+    <rect x="560" y="80" width="3" height="15" fill="#2E3A49"/>
+    <text x="596" y="92" font-size="11" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">deterministic — no model call</text>
+
+    <!-- ===== START / END ===== -->
+    <rect x="285" y="24" width="110" height="30" rx="15" fill="#0F141C" stroke="#35C5D8" stroke-opacity="0.55"/>
+    <text x="340" y="44" font-size="11.5" fill="#35C5D8" text-anchor="middle" letter-spacing="1.2">START</text>
+
+    <rect x="605" y="846" width="90" height="30" rx="15" fill="#0F141C" stroke="#35C5D8" stroke-opacity="0.55"/>
+    <text x="650" y="866" font-size="11.5" fill="#35C5D8" text-anchor="middle" letter-spacing="1.2">END</text>
+
+    <!-- ===== spine nodes ===== -->
+    <rect x="250" y="86" width="180" height="56" rx="7" fill="#171E29" stroke="#35C5D8"/>
+    <rect x="250" y="86" width="3" height="56" fill="#35C5D8"/>
+    <text x="268" y="111" font-size="14" fill="#E4EAF0">plan</text>
+    <text x="268" y="129" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">classify the intent</text>
+
+    <rect x="250" y="196" width="180" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
+    <rect x="250" y="196" width="3" height="56" fill="#2E3A49"/>
+    <text x="268" y="221" font-size="14" fill="#E4EAF0">retrieve</text>
+    <text x="268" y="239" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">schema cards + glossary</text>
+
+    <rect x="250" y="306" width="180" height="56" rx="7" fill="#171E29" stroke="#35C5D8"/>
+    <rect x="250" y="306" width="3" height="56" fill="#35C5D8"/>
+    <text x="268" y="331" font-size="14" fill="#E4EAF0">generate</text>
+    <text x="268" y="349" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">draft the SQL</text>
+
+    <rect x="250" y="416" width="180" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
+    <rect x="250" y="416" width="3" height="56" fill="#2E3A49"/>
+    <text x="268" y="441" font-size="14" fill="#E4EAF0">validate</text>
+    <text x="268" y="459" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">sqlglot guard</text>
+
+    <rect x="250" y="526" width="180" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
+    <rect x="250" y="526" width="3" height="56" fill="#2E3A49"/>
+    <text x="268" y="551" font-size="14" fill="#E4EAF0">execute</text>
+    <text x="268" y="569" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">run it in Snowflake</text>
+
+    <rect x="250" y="636" width="180" height="56" rx="7" fill="#171E29" stroke="#35C5D8"/>
+    <rect x="250" y="636" width="3" height="56" fill="#35C5D8"/>
+    <text x="268" y="661" font-size="14" fill="#E4EAF0">summarize</text>
+    <text x="268" y="679" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">write the answer</text>
+
+    <rect x="560" y="748" width="180" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
+    <rect x="560" y="748" width="3" height="56" fill="#2E3A49"/>
+    <text x="578" y="773" font-size="14" fill="#E4EAF0">remember</text>
+    <text x="578" y="791" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">keep the last 6 turns</text>
+
+    <!-- ===== left-branch nodes ===== -->
+    <rect x="24" y="196" width="160" height="56" rx="7" fill="#171E29" stroke="#232C39"/>
+    <rect x="24" y="196" width="3" height="56" fill="#2E3A49"/>
+    <text x="42" y="221" font-size="13" fill="#E4EAF0">scope_reply</text>
+    <text x="42" y="239" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">fixed scope message</text>
+
+    <rect x="24" y="306" width="160" height="56" rx="7" fill="#171E29" stroke="#35C5D8"/>
+    <rect x="24" y="306" width="3" height="56" fill="#35C5D8"/>
+    <text x="42" y="331" font-size="13" fill="#E4EAF0">glossary_answer</text>
+    <text x="42" y="349" font-size="10.5" fill="#8A98A8" font-family="ui-sans-serif, system-ui, sans-serif">define the term</text>
+
+    <!-- ===== spine edges ===== -->
+    <g stroke="#4A5768" stroke-width="1.6" fill="none">
+      <path d="M340,54 L340,82" marker-end="url(#a2)"/>
+      <path d="M340,142 L340,192" marker-end="url(#a2)"/>
+      <path d="M340,252 L340,302" marker-end="url(#a2)"/>
+      <path d="M340,362 L340,412" marker-end="url(#a2)"/>
+      <path d="M340,472 L340,522" marker-end="url(#a2)"/>
+      <path d="M340,582 L340,632" marker-end="url(#a2)"/>
+    </g>
+
+    <!-- ===== branch edges to the left column ===== -->
+    <!-- retrieve leaves from its underside, not its left edge: a left-edge exit at
+         y=224 would run straight through the scope_reply box sitting beside it. -->
+    <g stroke="#4A5768" stroke-width="1.6" fill="none">
+      <path d="M250,108 L104,108 L104,192" marker-end="url(#a2)"/>
+      <path d="M290,252 L290,278 L104,278 L104,302" marker-end="url(#a2)"/>
+    </g>
+
+    <!-- ===== repair loop ===== -->
+    <path d="M250,554 L222,554 L222,334 L246,334" fill="none" stroke="#7C8899" stroke-width="1.8" marker-end="url(#a2w)"/>
+
+    <!-- ===== error / terminal edges into remember ===== -->
+    <g stroke="#4A5768" stroke-width="1.6" fill="none">
+      <path d="M430,130 L700,130 L700,744" marker-end="url(#a2)"/>
+      <path d="M430,330 L660,330 L660,744" marker-end="url(#a2)"/>
+      <path d="M430,440 L620,440 L620,744" marker-end="url(#a2)"/>
+      <path d="M430,550 L580,550 L580,744" marker-end="url(#a2)"/>
+      <path d="M340,692 L340,762 L556,762" marker-end="url(#a2)"/>
+      <path d="M44,362 L44,776 L556,776" marker-end="url(#a2)"/>
+      <path d="M24,224 L12,224 L12,792 L556,792" marker-end="url(#a2)"/>
+      <path d="M650,804 L650,842" marker-end="url(#a2)"/>
+    </g>
+
+    <!-- ===== edge labels ===== -->
+    <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#8A98A8">
+      <text x="114" y="152">smalltalk</text>
+      <text x="114" y="166">unsupported</text>
+      <text x="196" y="271">glossary_lookup</text>
+      <text x="352" y="174">data_query · glossary_lookup</text>
+      <text x="352" y="284">data_query</text>
+      <text x="352" y="394">no LLM error</text>
+      <text x="352" y="504">passed the guard</text>
+      <text x="352" y="614">rows returned</text>
+      <text x="440" y="122">LLM error</text>
+      <text x="440" y="322">LLM error</text>
+      <text x="440" y="432">guard rejected — no repair</text>
+      <text x="440" y="542">exec error, repair_count &gt; 1</text>
+      <text x="212" y="438" text-anchor="end" fill="#B7C2CF">exec error, repair_count ≤ 1</text>
+      <text x="212" y="453" text-anchor="end">exactly one retry</text>
+    </g>
+
+  </g>
+</svg>
+      </div>
+      <figcaption>
+        <strong>Two details worth pausing on.</strong> A guard rejection is not repaired — <code>validate</code> goes straight to <code>remember</code>, because SQL the guard refused is a safety signal, not a syntax error to iterate on. An <em>execution</em> error is repaired exactly once: <code>execute</code> feeds the Snowflake error back into <code>generate</code>, and a second failure gives up rather than looping. <code>retrieve</code> makes no Anthropic call, though it does use Snowflake Cortex embeddings to rank; when Cortex is unavailable it falls back to keyword ranking and the response reports which mode it used.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ================= 3. GOVERNANCE =================================== -->
+  <section>
+    <div class="shead"><span class="snum">03</span><h2>How governance is enforced</h2></div>
+    <p class="sintro">Three layers, each with a different failure mode, so that no single one has to be right. What each layer does <em>not</em> do matters as much as what it does.</p>
+
+    <div class="layers">
+      <div class="layer">
+        <span class="tag">Layer 1 — in the app</span>
+        <h3>sqlglot guard</h3>
+        <p>Parses the model's SQL and admits exactly one statement: a <code>SELECT</code> (or a set operation over SELECTs), every table qualified to <code>MEDTECH_ANALYTICS.GOLD</code>, no DML or DDL, no <code>LATERAL</code>, no table functions, no <code>GET_DDL</code> or <code>SYSTEM$…</code>, and a <code>LIMIT</code> rewritten to at most 1000.</p>
+        <p class="not"><b>Does not</b>Check that the query is <em>right</em>. It reasons about the shape of SQL, not about entitlement — a query can clear the guard and still answer the wrong question.</p>
+      </div>
+
+      <div class="layer">
+        <span class="tag">Layer 2 — at the tool boundary</span>
+        <h3>MCP tool server</h3>
+        <p>Re-runs that identical validation — literally the same <code>validate()</code> from the same module — on whatever SQL it is handed, and refuses any Snowflake role outside <code>COPILOT_APP_RO</code> and <code>COPILOT_ADMIN</code>. It is a stdio server any client can drive, so it does not trust its caller.</p>
+        <p class="not"><b>Does not</b>Authenticate anybody. It never sees the JWT and has no idea who the user is; it only refuses to widen what it was asked to do.</p>
+      </div>
+
+      <div class="layer">
+        <span class="tag">Layer 3 — in the warehouse</span>
+        <h3>Snowflake role grants</h3>
+        <p><code>COPILOT_APP_RO</code> holds <code>SELECT</code> on <code>GOLD</code> and on exactly two tables in the <code>COPILOT</code> schema — the schema cards and the glossary. Everything else there, <code>REQUEST_LOG</code> included, was explicitly revoked.</p>
+        <p class="not"><b>Does not</b>Filter rows or judge intent. This is the layer that holds when the other two are wrong: the role cannot reach what it was never granted, whatever the SQL says.</p>
+      </div>
+    </div>
+
+    <p class="masknote">
+      <span class="maskkey">Masking</span>
+      <code>GOLD.DIM_TREATMENT_CENTER</code> is a Snowflake secure view, and <code>contact_email</code> is a <code>CASE</code> on <code>CURRENT_ROLE()</code>: <span class="masked">***MASKED***</span> for <code>COPILOT_APP_RO</code>, the real value for <code>COPILOT_ADMIN</code>. The unmasked source rows live in <code>SILVER</code>, which the read-only role has no grant on at all — so the mask is not something a cleverer query can route around. It is a view, not the native masking policy, for the reason set out below.
+    </p>
+  </section>
+
+  <!-- ================= 4. HONEST LIMITS ================================ -->
+  <section>
+    <div class="shead"><span class="snum">04</span><h2>What this is, and what it is not</h2></div>
+    <p class="sintro">This is a demo built to show a data path end to end, not a system carrying production load. The limits below are deliberate choices with reasons, not gaps waiting to be found.</p>
+
+    <dl class="spec">
+      <div class="row">
+        <dt>The data</dt>
+        <dd>Synthetic. 60 treatment centres, their radiotherapy machines, two years of daily utilization, and service tickets — generated deterministically by a seed script. No patient data of any kind and no real customer data; <code>contact_email</code> is the stand-in for PII.</dd>
+      </div>
+      <div class="row">
+        <dt>Deployment</dt>
+        <dd>One region (<code>us-east-1</code>), one ECS Fargate task, desired count of 1. No autoscaling and no multi-AZ redundancy in the application tier. Enough to demonstrate the path; not sized for anyone's traffic.</dd>
+      </div>
+      <div class="row">
+        <dt>Conversation memory</dt>
+        <dd>Held in the process — a bounded LangGraph checkpointer with an LRU over conversation threads, not Redis. A task restart drops history, and a second task would not share it. The bound is there partly for governance: it puts a ceiling on how long an admin's unmasked rows survive the request that produced them.</dd>
+      </div>
+      <div class="row">
+        <dt>Column masking</dt>
+        <dd>Implemented as a secure view rather than a native <code>MASKING POLICY</code>, because the trial account is Snowflake <strong>Standard</strong> edition and masking policies require Enterprise. The observable behaviour across these two roles is the same; the mechanism is not. The Enterprise DDL is written out, commented, in the governance script.</dd>
+      </div>
+      <div class="row">
+        <dt>Authentication</dt>
+        <dd>Two fixed demo accounts with bcrypt-hashed passwords and HS256 JWTs on an 8-hour TTL. No identity provider, no SSO, no user directory — the JWT exists to carry a role claim into a Snowflake role, which is the part worth demonstrating.</dd>
+      </div>
+      <div class="row">
+        <dt>The model</dt>
+        <dd>Claude, called through the Anthropic API for four things only: classifying intent, drafting SQL, defining a glossary term, and writing the prose summary over rows that Snowflake returned. The model never sees the warehouse directly and never chooses which role executes a query.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <!-- ================= CLOSING ========================================= -->
+  <div class="closing">
+    <p>The app is live at <a href="https://d9hwkll0kck56.cloudfront.net">d9hwkll0kck56.cloudfront.net</a>. The credentials for the two accounts were sent in the email — this page is public and unauthenticated, so it carries none.</p>
+    <p>The quickest way to see the point of it: sign in as the analyst and ask for the treatment centres with their contact emails, then sign in as the admin and ask exactly the same question. The generated SQL underneath both answers is identical. Only the column changes.</p>
+  </div>
+
+</div>
+</body>
+</html>
