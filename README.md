@@ -1,5 +1,58 @@
 # Analytics Copilot
 
+Ask a business question in plain English — "which treatment centers had the worst machine
+uptime last quarter?" — and get an answer from a governed Snowflake warehouse. The same
+question returns masked or real patient-contact data depending on who is signed in, and
+that boundary is enforced by the warehouse itself, not by application code.
+
+Built solo in one week as an end-to-end demonstration: warehouse modelling, retrieval,
+agent orchestration, security, evaluation, infrastructure, and CI/CD.
+
+> **The live deployment is offline.** The AWS stack was torn down in September 2026 to stop
+> the ~$2/day it cost to idle, so there is no demo URL. Everything that produced it is in
+> this repository: the application, the Terraform that recreates the whole environment with
+> one command, the decision log, and the recorded eval results.
+
+## What it does
+
+- **Natural language in, governed SQL out.** A LangGraph agent plans, retrieves the right
+  schema context, generates SQL, validates it, executes it, and summarizes the result —
+  with a bounded repair loop when validation fails.
+- **The same question answers differently by role.** An analyst sees `***MASKED***` where an
+  admin sees real contact details. This is Snowflake secure views plus role-scoped sessions,
+  so a bug in the API cannot leak the masked column.
+- **Two independent SQL guards.** A `sqlglot` allowlist in the app, and a second
+  re-validation inside the MCP tool server before anything reaches the warehouse. Neither
+  trusts the other.
+- **It is measured, not asserted.** A 36-case golden set runs through the real pipeline —
+  deterministic grading, plus an LLM judge for prose answers — scoring 36/36, mean 1.00.
+  Retrieval is scored separately at 9/9 recall.
+
+## If you only read three things
+
+| Where | Why it's worth a look |
+|---|---|
+| [docs/DECISIONS.md](docs/DECISIONS.md) | Every meaningful choice, the alternatives rejected, and the bugs that forced a rethink — including a privacy hole caused by widening a schema allowlist, and a cached Snowflake connection that outlived its auth token and took the app down for 19 hours. |
+| [docs/FLOW.md](docs/FLOW.md) | How a request actually executes, entrypoint to warehouse and back, with file-and-line references. |
+| [docs/reviews/](docs/reviews/) | A security review's findings and the fix record, including a working `GET_DDL` guard bypass found by adversarial review. |
+
+## How it's built
+
+React SPA → FastAPI → LangGraph agent → MCP tool server → Snowflake, with JWT-based RBAC
+mapping `analyst` to a masked read-only session and `admin` to an unmasked one. Deployed to
+AWS with Terraform: ECS Fargate behind an ALB, a React build on S3, both fronted by a single
+CloudFront distribution, with OIDC-authenticated GitHub Actions for CI/CD.
+
+`frontend/public/architecture.html` is a standalone page with two hand-drawn SVG diagrams —
+the system architecture with the role split, and the full LangGraph node graph separating
+LLM-calling nodes from deterministic ones. Clone and open it in a browser.
+
+**Tests:** 242 hermetic backend tests, 24 frontend, 5 live (warehouse-dependent).
+CI runs the hermetic suite plus lint on every push.
+
+<details>
+<summary><b>The full technical summary</b> (the original, denser description)</summary>
+
 Chat assistant that answers business questions against a governed Snowflake
 medallion warehouse in natural language. Claude-powered vertical slice —
 Cortex vector retrieval over a business glossary, schema-checked SQL
@@ -32,6 +85,8 @@ for why there is deliberately no PR-triggered subset. **CloudWatch telemetry**
 EMF metrics the app already emits, one over the ALB's own native health
 metric) — completes the loop; see `terraform -chdir=infra output -raw
 dashboard_url` after `make aws-up`.
+
+</details>
 
 ## Documentation
 

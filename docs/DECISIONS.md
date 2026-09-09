@@ -551,8 +551,8 @@ behind that same domain would answer every `/api/*` call with an error, and a hi
 clicking a dead "live demo" is worse than no link at all.
 
 What the full destroy costs: the CloudFront domain is **not** stable across a destroy/create
-cycle, so `https://d9hwkll0kck56.cloudfront.net` -- the URL in the study pack and in the
-never-sent follow-up email -- is permanently dead, not merely down. Re-creating the stack
+cycle, so the distribution's domain -- the URL every previously shared link pointed at --
+is permanently dead, not merely down. Re-creating the stack
 means a new domain, a fresh `make aws-secret`, and re-running the two `gh variable set` lines
 for `APP_URL` and `CLOUDFRONT_DISTRIBUTION_ID`.
 

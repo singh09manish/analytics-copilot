@@ -13,9 +13,9 @@ resources are gone. What follows is what still wants a human.
 clusters, load balancers, CloudFront distributions, ECR repos, S3 buckets, secrets, log
 groups, or OIDC providers remain in the project AWS account).
 
-- **https://d9hwkll0kck56.cloudfront.net is permanently dead**, not merely down — the domain
-  no longer resolves. A re-created stack gets a *new* CloudFront domain. That URL appears in
-  the study pack and in the follow-up email draft that was never sent.
+- **The CloudFront URL is permanently dead**, not merely down — the domain no longer
+  resolves. A re-created stack gets a *new* CloudFront domain, so any previously shared link
+  cannot be revived by bringing the stack back up.
 - **The account-level OIDC hazard was a non-issue.** `aws_iam_openid_connect_provider.github`
   is an account singleton, but `aws iam list-roles` confirmed nothing outside this project
   trusted it. No collateral damage.
