@@ -1,102 +1,110 @@
 # Pending actions
 
-All four build phases are complete and tagged. Nothing blocks the demo. What follows is the short
-list that still wants a human, in the order it matters.
+All four build phases are complete and tagged. **The AWS stack was destroyed on 2026-09-09**
+once the demo was no longer needed — see DECISIONS.md, "The stack was destroyed, not parked".
+The code, the Terraform, and the Snowflake warehouse all survive; only the running AWS
+resources are gone. What follows is what still wants a human.
 
 ---
 
-## Before the interview (Thu 2026-08-13, 3:00 PM ET)
+## The stack is down — what that changed
 
-### Warm the app up ~10 minutes before the call
+`make aws-down` destroyed 29 resources cleanly (exit 0, verified empty afterward: no ECS
+clusters, load balancers, CloudFront distributions, ECR repos, S3 buckets, secrets, log
+groups, or OIDC providers remain in the project AWS account).
 
-The first request after an idle period pays a real cold-start cost: the ECS task opens Snowflake
-connections and spawns the MCP subprocess lazily on first use. Ask one throwaway question through
-the UI so the demo itself is fast.
+- **https://d9hwkll0kck56.cloudfront.net is permanently dead**, not merely down — the domain
+  no longer resolves. A re-created stack gets a *new* CloudFront domain. That URL appears in
+  the study pack and in the follow-up email draft that was never sent.
+- **The account-level OIDC hazard was a non-issue.** `aws_iam_openid_connect_provider.github`
+  is an account singleton, but `aws iam list-roles` confirmed nothing outside this project
+  trusted it. No collateral damage.
+- **~$2/day stopped.** Fargate, the ALB, and five public IPv4 addresses were the bulk.
 
-Open https://d9hwkll0kck56.cloudfront.net, sign in, ask "how many machines do we have per model?",
-wait for the answer, sign out. That is the whole warm-up. It also puts the first datapoints on the
-CloudWatch dashboard, which is otherwise empty.
+### Both GitHub workflows now fail — decide what to do with them
 
-### Use two browser profiles for the RBAC demo
+Neither has been touched yet. Both authenticate to AWS through the OIDC provider and the
+IAM role that no longer exist, so both fail at the assume-role step:
 
-`frontend/src/api.ts` reads the token from `localStorage` on every request, so two tabs in the same
-profile cannot hold two roles at once — signing in as admin silently replaces the analyst session,
-and the side-by-side contrast would show real emails in both panes. Use a normal window for the
-analyst and an Incognito window for the admin.
+- **`.github/workflows/evals.yml` runs on a cron, Mondays 06:17 UTC.** It reads its Anthropic
+  and Snowflake credentials from the deleted `analytics-copilot/runtime` secret — `gh secret
+  list` is empty, so there is no fallback. This one fires by itself, every week, forever.
+- **`.github/workflows/deploy.yml` runs on every push to `main`.**
 
-### Two live limits worth knowing
+`gh workflow disable deploy.yml evals.yml` stops both; `gh workflow enable` reverses it.
 
-- **CloudFront caps origin responses at 60s.** A pathological query returns 504 at the edge while
-  the backend keeps working. Normal questions answer well inside that. The quota (`L-AECE9FA7`,
-  "Response timeout per origin") defaults to 120 and is adjustable, so it is raisable without a
-  support case if you ever want the headroom.
-- **`aws logs tail` does not exist on this machine.** The AWS CLI here is v1 at `~/.local/bin/aws`
-  and `logs tail` is a v2 subcommand. Use
-  `aws logs filter-log-events --log-group-name /ecs/analytics-copilot` instead.
+### Stale GitHub repo variables
+
+`APP_URL` and `CLOUDFRONT_DISTRIBUTION_ID` still point at the destroyed distribution.
+`WEB_BUCKET` and `AWS_DEPLOY_ROLE_ARN` happen to remain correct for a re-up, since the bucket
+name and role ARN are derived from the account id and project name.
+
+### Snowflake was deliberately left alone
+
+It is not in Terraform and nothing was dropped. `COPILOT_WH` is `AUTO_SUSPEND = 60`, and with
+the ECS task gone nothing queries it, so it sits idle at storage-only cost for a dataset of a
+few hundred megabytes. Dropping `COPILOT` and the roles is a separate, deliberate act if the
+project is ever truly retired.
 
 ---
 
-## After the interview
-
-### Tear the stack down
+## If you ever bring it back
 
 ```
-make aws-down
+make aws-up && make aws-secret
 ```
 
-Roughly **$2/day** while it runs — Fargate, the ALB, and public IPv4 addresses across five ALB
-subnets are the bulk. Three things to know before re-creating it later:
+Three things that bite in that order:
 
-- It deletes `aws_iam_openid_connect_provider.github`, an **account-level singleton**. If this AWS
-  account ever hosts another project using GitHub OIDC, that project loses its trust too.
-- The Secrets Manager secret is destroyed with **no recovery window**, so `make aws-secret` must be
-  re-run after any re-up.
-- `CLOUDFRONT_DISTRIBUTION_ID` and `APP_URL` are **not** stable across a destroy/create cycle (the
-  bucket name and role ARN are). Re-run those two `gh variable set` lines from the README, or the
-  next deploy fails at CDN invalidation and smoke-tests a dead URL.
+- The Secrets Manager secret was destroyed with **no recovery window**, so `make aws-secret`
+  is mandatory, not optional — the task cannot start without it.
+- `CLOUDFRONT_DISTRIBUTION_ID` and `APP_URL` are **not** stable across a destroy/create cycle.
+  Re-run those two `gh variable set` lines from the README or the next deploy fails at CDN
+  invalidation and smoke-tests a dead URL.
+- Re-enable the two workflows if they were disabled.
 
-**Terraform state is local and gitignored**, so teardown must run from this machine.
+**Terraform state is local and gitignored**, so any re-up must also run from this machine.
 
 ---
 
 ## Genuinely unverified — say so plainly if asked
 
-- **The weekly scheduled eval has never fired.** `.github/workflows/evals.yml` runs Mondays at
-  06:17 UTC and on manual dispatch. The runner has been exercised repeatedly by hand (`make evals`)
-  and the workflow passes `actionlint`, but the schedule has not yet triggered a real run. To see it
-  end to end: `gh workflow run evals.yml`.
-- **The `FUTURE TABLES` grant to `COPILOT_ADMIN`** is applied but unproven — no new COPILOT table has
-  been created since. The `ALL TABLES` grant is verified working: admin reads REQUEST_LOG, FEEDBACK,
-  and EVAL_RESULTS.
+- **The weekly scheduled eval never fired a real run.** `.github/workflows/evals.yml` was
+  exercised repeatedly by hand (`make evals`) and passes `actionlint`, but the Monday schedule
+  never triggered while the stack was up. It cannot succeed now — its credentials came from
+  the deleted secret.
+- **The `FUTURE TABLES` grant to `COPILOT_ADMIN`** is applied but unproven — no new COPILOT
+  table has been created since. The `ALL TABLES` grant is verified working: admin reads
+  REQUEST_LOG, FEEDBACK, and EVAL_RESULTS.
 
 ---
 
 ## Optional, none blocking
 
+These are notes on code that still exists, relevant only if the stack is ever re-created.
+
 - Raise `origin_read_timeout` in `infra/cdn.tf` from 60 to 120. The quota already permits it.
 - The planner's table inventory in `agent/prompts.py` is hand-maintained against
-  `data/ai_library/schema_cards.yaml`. A committed test pins every column name, but generating the
-  inventory from the cards would remove the defect class entirely — it has already caused two bugs:
-  six wrong column names, then a missing `parts_cost` that made a whole question category
-  unanswerable.
-- `Admin.tsx` fails all three sections together if any one endpoint errors, rather than degrading
-  section by section.
+  `data/ai_library/schema_cards.yaml`. A committed test pins every column name, but generating
+  the inventory from the cards would remove the defect class entirely — it has already caused
+  two bugs: six wrong column names, then a missing `parts_cost` that made a whole question
+  category unanswerable.
+- `Admin.tsx` fails all three sections together if any one endpoint errors, rather than
+  degrading section by section.
 
 ---
 
 ## Done — the state you can rely on
 
-- **Live**: https://d9hwkll0kck56.cloudfront.net — React SPA, JWT auth, analyst and admin roles.
-- **Verified end to end on AWS**: the same question returns `***MASKED***` contact emails for the
-  analyst and real addresses for the admin. The Admin Console returns 403 to an analyst and 200 with
-  real ops data to an admin.
+- **Was live and verified end to end on AWS**: the same question returned `***MASKED***`
+  contact emails for the analyst and real addresses for the admin. The Admin Console returned
+  403 to an analyst and 200 with real ops data to an admin. The infrastructure that served
+  this is gone; the evidence and the code are not.
 - **Eval harness**: **36/36, mean score 1.00**, safety gate green. The trend is recorded in
   `COPILOT.EVAL_RESULTS`: 27/36 → 35/36 → 36/36 across one calibration and two real fixes.
   Retrieval evals 9/9 at mean recall 1.00.
-- **Snowflake governance**: analyst blocked from `SILVER`, `BRONZE`, and the COPILOT ops tables;
-  secondary roles pinned empty; 60s statement timeout.
-- **Admin ops-table grant**: applied and verified live (moved here from "Open" once confirmed rather
-  than assumed).
-- **Tests**: 242 hermetic backend, 24 frontend, 5 live.
+- **Snowflake governance**: analyst blocked from `SILVER`, `BRONZE`, and the COPILOT ops
+  tables; secondary roles pinned empty; 60s statement timeout. Still standing.
+- **Tests**: 242 hermetic backend, 24 frontend, 5 live. The live ones need Snowflake, which
+  survives; they never needed AWS.
 - **Tags**: `v0.1-slice`, `v0.2-agent`, `v0.3-aws`, `v0.4-evals`.
-- **Dashboard**: [analytics-copilot-overview](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=analytics-copilot-overview)

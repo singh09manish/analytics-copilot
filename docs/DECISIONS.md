@@ -541,6 +541,26 @@ gitignored, which means teardown must happen from the same machine.
 so teardown does not stall on leftover objects. The failure mode this avoids is an account
 quietly accruing charges for resources nobody remembers creating.
 
+### The stack was destroyed, not parked (2026-09-09)
+The demo's audience went away, so `make aws-down` finally ran. Two cheaper-than-destroy options were on the table and both were rejected. Scaling
+`desired_count` to zero keeps the URL alive but saves only the Fargate share -- the ALB and
+its five public IPv4 addresses are the bulk of the ~$2/day, so it pays most of the bill for
+none of the demo. Keeping S3 and CloudFront while dropping ECS and the ALB would have held
+the standalone architecture page at its existing URL for cents a month, but the chat demo
+behind that same domain would answer every `/api/*` call with an error, and a hiring manager
+clicking a dead "live demo" is worse than no link at all.
+
+What the full destroy costs: the CloudFront domain is **not** stable across a destroy/create
+cycle, so `https://d9hwkll0kck56.cloudfront.net` -- the URL in the study pack and in the
+never-sent follow-up email -- is permanently dead, not merely down. Re-creating the stack
+means a new domain, a fresh `make aws-secret`, and re-running the two `gh variable set` lines
+for `APP_URL` and `CLOUDFRONT_DISTRIBUTION_ID`.
+
+One documented hazard turned out to be theoretical. `aws_iam_openid_connect_provider.github`
+is an account-level singleton, and destroying it removes GitHub OIDC trust for every project
+in the account -- but `aws iam list-roles` confirmed this account holds only this project's
+three roles plus AWS service-linked ones, so nothing else lost its trust.
+
 ### The deploy pipeline verifies the rollout is COMPLETED, not just stable
 **Found in review.** `aws ecs wait services-stable` only polls until
 `length(deployments) == 1 && runningCount == desiredCount`; it never inspects
